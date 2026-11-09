@@ -13,12 +13,21 @@ pub struct Hit {
     pub config: bool,
 }
 
+pub struct ButtonSprite {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    pub bgra: Vec<u8>,
+}
+
 pub struct Frame {
     pub width: u32,
     pub height: u32,
     pub bgra: Vec<u8>,
     pub hits: Vec<Hit>,
     pub panel: [i32; 4],
+    pub button: Option<ButtonSprite>,
 }
 
 pub struct Painter {
@@ -49,7 +58,6 @@ impl Painter {
     ) -> Frame {
         let width = width.max(1);
         let height = height.max(1);
-        let mut pixmap = Pixmap::new(width, height).unwrap_or_else(|| Pixmap::new(1, 1).unwrap());
         let scale = scale.clamp(0.6, 2.5);
         let opacity = opacity.clamp(0.15, 1.0);
         let margin = (16.0 * scale) as i32;
@@ -57,7 +65,6 @@ impl Painter {
         let row_h = (icon_px + 10).max(28);
         let panel_w = ((430.0 * scale) as u32).min(width.saturating_sub(margin as u32 * 2).max(1));
         let mut y_cursor = 10u32;
-        // Draw into a tall scratch by painting directly on the full pixmap after we know height.
         let mut rows: Vec<RowDraw> = Vec::new();
         for line in lines {
             let text_h = if line.detail.is_empty() { row_h } else { row_h + (14.0 * scale) as u32 };
@@ -69,19 +76,21 @@ impl Painter {
         }
         let panel_h = (y_cursor + 12).clamp(36, height.saturating_sub(margin as u32 * 2).max(36));
         let (px, py) = place(corner, width, height, panel_w, panel_h, margin);
+        let panel_h = panel_h.min(height);
+        let mut pixmap = Pixmap::new(panel_w, panel_h).unwrap_or_else(|| Pixmap::new(1, 1).unwrap());
         fill_round(
             &mut pixmap,
-            px as f32,
-            py as f32,
+            0.0,
+            0.0,
             panel_w as f32,
-            panel_h.min(height) as f32,
+            panel_h as f32,
             10.0 * scale,
             premul(theme.background, opacity),
         );
-        let mut y = py as u32 + 8;
+        let mut y = 8u32;
         let mut hits = Vec::new();
         for row in rows {
-            if y + row.h > py as u32 + panel_h {
+            if y + row.h > panel_h {
                 break;
             }
             let icon_key = if row.line.is_header {
@@ -91,15 +100,15 @@ impl Painter {
             } else {
                 row.line.icon.as_str()
             };
-            self.blit_icon(&mut pixmap, icon_key, px + 8, y as i32 + 4, icon_px);
+            self.blit_icon(&mut pixmap, icon_key, 8, y as i32 + 4, icon_px);
             if row.line.kind == EventKind::GemBuy {
-                self.blit_icon(&mut pixmap, "wisdom", px + 8 + icon_px as i32 - 8, y as i32 + icon_px as i32 - 6, 12);
+                self.blit_icon(&mut pixmap, "wisdom", 8 + icon_px as i32 - 8, y as i32 + icon_px as i32 - 6, 12);
             }
             let color = if row.line.is_header { theme.accent } else { theme.text };
             self.draw_text(
                 &mut pixmap,
                 &row.line.text,
-                (px + 12 + icon_px as i32) as f32,
+                (12 + icon_px as i32) as f32,
                 y as f32 + 2.0,
                 (panel_w - icon_px - 24) as f32,
                 16.0 * scale,
@@ -110,7 +119,7 @@ impl Painter {
                 self.draw_text(
                     &mut pixmap,
                     &row.line.detail,
-                    (px + 12 + icon_px as i32) as f32,
+                    (12 + icon_px as i32) as f32,
                     y as f32 + 18.0 * scale,
                     (panel_w - icon_px - 24) as f32,
                     12.0 * scale,
@@ -121,7 +130,7 @@ impl Painter {
             if !row.line.is_header {
                 hits.push(Hit {
                     id: row.line.event_id.clone(),
-                    x: px,
+                    x: 0,
                     y: y as i32,
                     w: panel_w as i32,
                     h: row.h as i32,
@@ -130,38 +139,39 @@ impl Painter {
             }
             y += row.h;
         }
-        if show_button {
+        let button = if show_button {
             let bw = (120.0 * scale) as u32;
             let bh = (28.0 * scale) as u32;
-            let bx = (width as i32 - bw as i32) / 2;
-            let by = 8;
-            fill_round(&mut pixmap, bx as f32, by as f32, bw as f32, bh as f32, 8.0, premul(theme.background, opacity));
+            let mut button_px = Pixmap::new(bw, bh).unwrap_or_else(|| Pixmap::new(1, 1).unwrap());
+            fill_round(&mut button_px, 0.0, 0.0, bw as f32, bh as f32, 8.0, premul(theme.background, opacity));
             self.draw_text(
-                &mut pixmap,
+                &mut button_px,
                 "Config",
-                bx as f32 + 28.0,
-                by as f32 + 4.0,
+                28.0,
+                4.0,
                 bw as f32 - 36.0,
                 14.0 * scale,
                 theme.accent,
                 opacity,
             );
-            self.blit_icon(&mut pixmap, "waypoint", bx + 6, by + 4, bh.saturating_sub(8));
-            hits.push(Hit {
-                id: "config".into(),
-                x: bx,
-                y: by,
-                w: bw as i32,
-                h: bh as i32,
-                config: true,
-            });
-        }
+            self.blit_icon(&mut button_px, "waypoint", 6, 4, bh.saturating_sub(8));
+            Some(ButtonSprite {
+                x: (width as i32 - bw as i32) / 2,
+                y: 8,
+                w: bw,
+                h: bh,
+                bgra: rgba_to_bgra(button_px.data()),
+            })
+        } else {
+            None
+        };
         Frame {
-            width,
-            height,
+            width: pixmap.width(),
+            height: pixmap.height(),
             bgra: rgba_to_bgra(pixmap.data()),
             hits,
-            panel: [px, py, panel_w as i32, panel_h.min(height) as i32],
+            panel: [px, py, pixmap.width() as i32, pixmap.height() as i32],
+            button,
         }
     }
 

@@ -1,0 +1,77 @@
+name: release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: RustyExile-linux-x86_64.zip
+            binary: target/release/RustyExile
+          - os: windows-latest
+            asset: RustyExile-windows-x86_64.zip
+            binary: target/release/RustyExile.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: system packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev zip
+      - name: build
+        run: cargo build --release -p RustyExile
+      - name: package linux
+        if: runner.os == 'Linux'
+        run: |
+          stage="$(mktemp -d)"
+          cp "${{ matrix.binary }}" "$stage/RustyExile"
+          chmod 755 "$stage/RustyExile"
+          cp -a assets "$stage/assets"
+          (cd "$stage" && zip -r "$GITHUB_WORKSPACE/${{ matrix.asset }}" RustyExile assets)
+      - name: package windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $stage = Join-Path $env:RUNNER_TEMP "rusty-stage"
+          New-Item -ItemType Directory -Path $stage | Out-Null
+          Copy-Item "${{ matrix.binary }}" (Join-Path $stage "RustyExile.exe")
+          Copy-Item -Recurse assets (Join-Path $stage "assets")
+          Compress-Archive -Path "$stage\RustyExile.exe", "$stage\assets" -DestinationPath "${{ matrix.asset }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
+          tag="v${version}"
+          shopt -s nullglob
+          files=(dist/*.zip)
+          if [ "${#files[@]}" -eq 0 ]; then
+            echo "no release archives were built"
+            exit 1
+          fi
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "${files[@]}" --clobber
+          else
+            gh release create "$tag" "${files[@]}" --title "RustyExile ${version}" --notes "Release ${version}."
+          fi

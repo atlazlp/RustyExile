@@ -1,7 +1,8 @@
 use eframe::egui::{self, Color32, RichText, TextureHandle, TextureOptions};
 use poe_core::{
     build_route, fetch_pob, install_build, vendor_gem_regex, visible_lines, AppState, CampaignEvent,
-    CharacterFile, ChatCommand, EventGroup, EventKind, Experience, HudCorner, TriggerKind,
+    CharacterFile, ChatCommand, EventGroup, EventKind, Experience, HudCorner, TriggerKind, UpdateOutcome,
+    VERSION,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -10,6 +11,7 @@ pub fn run(state: Arc<Mutex<AppState>>) -> eframe::Result {
     eframe::run_native(
         "RustyExile",
         eframe::NativeOptions {
+            vsync: false,
             viewport: egui::ViewportBuilder::default()
                 .with_inner_size([1240.0, 820.0])
                 .with_min_inner_size([980.0, 640.0])
@@ -29,10 +31,13 @@ struct UiApp {
     tab: Tab,
     search: String,
     new_name: String,
-    new_class: String,
     new_pob: String,
     launch_note: String,
     launch_rx: Option<std::sync::mpsc::Receiver<String>>,
+    update_note: String,
+    update_rx: Option<std::sync::mpsc::Receiver<UpdateOutcome>>,
+    update_manual: bool,
+    start_update: bool,
     ctx: egui::Context,
 }
 
@@ -111,6 +116,7 @@ impl Tab {
 impl UiApp {
     fn new(cc: &eframe::CreationContext<'_>, state: Arc<Mutex<AppState>>) -> Self {
         apply_style(&cc.egui_ctx);
+        let start_update = state.lock().map(|state| state.settings.auto_update).unwrap_or(true);
         Self {
             state,
             icons: HashMap::new(),
@@ -119,10 +125,13 @@ impl UiApp {
             tab: Tab::General,
             search: String::new(),
             new_name: String::new(),
-            new_class: "Templar".into(),
             new_pob: String::new(),
             launch_note: String::new(),
             launch_rx: None,
+            update_note: String::new(),
+            update_rx: None,
+            update_manual: false,
+            start_update,
             ctx: cc.egui_ctx.clone(),
         }
     }
@@ -160,6 +169,15 @@ impl eframe::App for UiApp {
                 self.launch_note = note;
             }
         }
+        if self.start_update {
+            self.start_update = false;
+            self.check_updates(false);
+        }
+        let update = self.update_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        if let Some(outcome) = update {
+            self.update_rx = None;
+            self.finish_update(outcome);
+        }
         let chosen = self.state.lock().map(|s| s.settings.experience_chosen).unwrap_or(false);
         if !chosen {
             self.wizard(ctx);
@@ -190,19 +208,45 @@ impl eframe::App for UiApp {
 
 impl UiApp {
     fn nav(&mut self, ui: &mut egui::Ui) {
-        let button_block = if self.launch_note.is_empty() { 100.0 } else { 128.0 };
-        let list_h = (ui.available_height() - button_block).max(160.0);
-        egui::ScrollArea::vertical().id_salt("nav").max_height(list_h).show(ui, |ui| {
-            ui.add_space(8.0);
-            ui.label(RichText::new("RustyExile").size(22.0).strong().color(ink()));
-            ui.label(RichText::new("Configuration").size(13.0).color(muted()));
-            ui.add_space(22.0);
-            for tab in Tab::all() {
-                self.nav_button(ui, tab);
-            }
-        });
-        ui.add_space(12.0);
-        self.action_buttons(ui, true);
+        let auto_update = self.state.lock().map(|state| state.settings.auto_update).unwrap_or(true);
+        let mut footer = 150.0;
+        if !self.launch_note.is_empty() {
+            footer += 22.0;
+        }
+        if !self.update_note.is_empty() {
+            footer += 22.0;
+        }
+        if !auto_update {
+            footer += 44.0;
+        }
+        let list_h = (ui.available_height() - footer).max(120.0);
+        egui::Frame::NONE
+            .inner_margin(egui::Margin { left: 10, right: 0, top: 0, bottom: 0 })
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("nav")
+                    .auto_shrink([false, false])
+                    .max_height(list_h)
+                    .show(ui, |ui| {
+                        ui.add_space(8.0);
+                        ui.label(RichText::new("RustyExile").size(22.0).strong().color(ink()));
+                        ui.label(RichText::new("Configuration").size(13.0).color(muted()));
+                        ui.add_space(22.0);
+                        for tab in Tab::all() {
+                            self.nav_button(ui, tab);
+                        }
+                    });
+                ui.add_space(8.0);
+                self.action_buttons(ui, true);
+                if !auto_update {
+                    ui.add_space(8.0);
+                    let width = ui.available_width();
+                    if ui.add_sized([width, 36.0], egui::Button::new("Check for updates")).clicked() {
+                        self.check_updates(true);
+                    }
+                }
+            });
+        ui.label(RichText::new(format!("v{VERSION}")).size(11.0).color(muted()));
     }
 
     fn action_buttons(&mut self, ui: &mut egui::Ui, stacked: bool) {
@@ -221,6 +265,10 @@ impl UiApp {
             ui.add_space(6.0);
             ui.label(RichText::new(&self.launch_note).size(12.0).color(muted()));
         }
+        if !self.update_note.is_empty() {
+            ui.add_space(6.0);
+            ui.label(RichText::new(&self.update_note).size(12.0).color(muted()));
+        }
     }
 
     fn close_config(&self) {
@@ -228,6 +276,11 @@ impl UiApp {
     }
 
     fn exit_overlay(&self) {
+        self.persist();
+        std::process::exit(0);
+    }
+
+    fn persist(&self) {
         if let Ok(state) = self.state.lock() {
             if state.dirty_settings {
                 let _ = poe_core::save_settings(&state.settings);
@@ -244,7 +297,51 @@ impl UiApp {
                 }
             }
         }
-        std::process::exit(0);
+    }
+
+    fn check_updates(&mut self, manual: bool) {
+        if self.update_rx.is_some() {
+            return;
+        }
+        self.update_manual = manual;
+        self.update_note = "Checking for updates.".into();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.update_rx = Some(rx);
+        std::thread::Builder::new()
+            .name("rusty-update".into())
+            .spawn(move || {
+                let _ = tx.send(poe_core::check_for_update());
+            })
+            .ok();
+    }
+
+    fn finish_update(&mut self, outcome: UpdateOutcome) {
+        match outcome {
+            UpdateOutcome::UpToDate => {
+                self.update_note = if self.update_manual {
+                    format!("RustyExile {VERSION} is up to date.")
+                } else {
+                    String::new()
+                };
+            }
+            UpdateOutcome::NoRelease => {
+                self.update_note = if self.update_manual {
+                    "No release has been published yet.".into()
+                } else {
+                    String::new()
+                };
+            }
+            UpdateOutcome::Installed { version } => {
+                self.update_note = format!("Updating to {version}.");
+                self.persist();
+                if let Err(err) = poe_core::restart_installed() {
+                    self.update_note = format!("Could not restart. {err}");
+                }
+            }
+            UpdateOutcome::Failed(err) => {
+                self.update_note = err;
+            }
+        }
     }
 
     fn open_poe(&mut self) {
@@ -389,6 +486,7 @@ impl UiApp {
 
     fn general(&mut self, ui: &mut egui::Ui) {
         let Ok(mut state) = self.state.lock() else { return };
+        let mut schedule_update = false;
         ui.style_mut().spacing.slider_width = 260.0;
         section(ui, "Profile");
         ui.columns(3, |cols| {
@@ -439,9 +537,13 @@ impl UiApp {
                     let landmarks = ui.checkbox(&mut state.settings.show_landmarks, "Landmarks").changed();
                     let hud = ui.checkbox(&mut state.hud_enabled, "Show while the game is focused").changed();
                     ui.end_row();
-                    if tips || acts || gems || league || landmarks || hud {
+                    let was_auto = state.settings.auto_update;
+                    let auto = ui.checkbox(&mut state.settings.auto_update, "Automatic updates").changed();
+                    ui.end_row();
+                    if tips || acts || gems || league || landmarks || hud || auto {
                         state.dirty_settings = true;
                     }
+                    schedule_update = auto && state.settings.auto_update && !was_auto;
                 });
         });
 
@@ -511,6 +613,10 @@ impl UiApp {
                 ui.label(state.status.as_str());
             }
         });
+        drop(state);
+        if schedule_update {
+            self.check_updates(false);
+        }
     }
 
     fn hotkeys(&mut self, ui: &mut egui::Ui) {
@@ -885,13 +991,6 @@ impl UiApp {
                 ui.label("Name");
                 ui.add(line_edit(&mut self.new_name).desired_width(320.0));
                 ui.end_row();
-                ui.label("Class");
-                egui::ComboBox::from_id_salt("class").selected_text(&self.new_class).show_ui(ui, |ui| {
-                    for class_name in ["Scion", "Marauder", "Ranger", "Witch", "Duelist", "Templar", "Shadow"] {
-                        ui.selectable_value(&mut self.new_class, class_name.to_string(), class_name);
-                    }
-                });
-                ui.end_row();
                 ui.label("PoB link");
                 ui.add(line_edit(&mut self.new_pob).desired_width(320.0));
                 ui.end_row();
@@ -919,16 +1018,15 @@ impl UiApp {
             return;
         }
         let link = self.new_pob.clone();
-        let class_name = self.new_class.clone();
         let fetched = fetch_pob(&link)
             .map_err(|err| err.to_string())
             .and_then(|body| poe_core::decode_pob(&body).map_err(|err| err.to_string()));
         let Ok(mut state) = self.state.lock() else { return };
         match fetched {
-            Ok(mut build) => {
-                if build.class_name.is_empty() {
-                    build.class_name = class_name.clone();
-                }
+            Ok(build) if build.class_name.is_empty() => {
+                state.status = "That build does not say which class it is.".into();
+            }
+            Ok(build) => {
                 let league_start = state.settings.league_start;
                 if !state.characters.iter().any(|c| c.name == name) {
                     let route = build_route(&state.catalog, &build.class_name, None, league_start);
@@ -1375,7 +1473,7 @@ fn card() -> egui::Frame {
 fn sidebar_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(Color32::from_rgb(16, 18, 22))
-        .inner_margin(egui::Margin::same(16))
+        .inner_margin(egui::Margin { left: 6, right: 16, top: 16, bottom: 2 })
 }
 
 fn page_frame() -> egui::Frame {

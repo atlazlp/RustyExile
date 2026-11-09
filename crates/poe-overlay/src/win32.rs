@@ -321,27 +321,17 @@ unsafe fn place_panel(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, c
         let _ = ShowWindow(hwnd, SW_HIDE);
         return;
     }
-    let local: Vec<Hit> = frame
-        .hits
-        .iter()
-        .filter(|hit| !hit.config)
-        .map(|hit| Hit {
-            x: hit.x - x,
-            y: hit.y - y,
-            ..hit.clone()
-        })
-        .collect();
     if let Ok(mut click) = CLICK.lock() {
-        click.panel_hits = local;
+        click.panel_hits = frame.hits.clone();
     }
-    move_layered(hwnd, origin_x + x, origin_y + y, w as u32, h as u32, &crop(frame, x, y, w as u32, h as u32));
+    move_layered(hwnd, origin_x + x, origin_y + y, frame.width, frame.height, &frame.bgra);
     set_click_through(hwnd, !capture);
     let _ = ShowWindow(hwnd, SW_SHOWNA);
     let _ = SetWindowPos(hwnd, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOACTIVATE | windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE);
 }
 
 unsafe fn place_button(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, near: bool) {
-    let Some(hit) = frame.hits.iter().find(|hit| hit.config) else {
+    let Some(button) = &frame.button else {
         let _ = ShowWindow(hwnd, SW_HIDE);
         return;
     };
@@ -351,31 +341,14 @@ unsafe fn place_button(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, 
     }
     move_layered(
         hwnd,
-        origin_x + hit.x,
-        origin_y + hit.y,
-        hit.w as u32,
-        hit.h as u32,
-        &crop(frame, hit.x, hit.y, hit.w as u32, hit.h as u32),
+        origin_x + button.x,
+        origin_y + button.y,
+        button.w,
+        button.h,
+        &button.bgra,
     );
     set_click_through(hwnd, false);
     let _ = ShowWindow(hwnd, SW_SHOWNA);
-}
-
-fn crop(frame: &Frame, x: i32, y: i32, w: u32, h: u32) -> Vec<u8> {
-    let mut out = vec![0u8; (w * h * 4) as usize];
-    for row in 0..h {
-        let src_y = y as u32 + row;
-        if src_y >= frame.height {
-            break;
-        }
-        let src = ((src_y * frame.width + x.max(0) as u32) as usize) * 4;
-        let dst = (row * w) as usize * 4;
-        let n = (w as usize) * 4;
-        if src + n <= frame.bgra.len() && dst + n <= out.len() {
-            out[dst..dst + n].copy_from_slice(&frame.bgra[src..src + n]);
-        }
-    }
-    out
 }
 
 unsafe fn move_layered(hwnd: HWND, x: i32, y: i32, width: u32, height: u32, bgra: &[u8]) {

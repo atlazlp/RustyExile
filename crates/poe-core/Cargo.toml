@@ -12,6 +12,7 @@ thiserror.workspace = true
 anyhow.workspace = true
 base64.workspace = true
 flate2.workspace = true
+zip = { version = "2", default-features = false, features = ["deflate"] }
 roxmltree.workspace = true
 directories.workspace = true
 sysinfo.workspace = true

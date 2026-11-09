@@ -8,6 +8,7 @@ pub mod regexes;
 pub mod route;
 pub mod state;
 pub mod store;
+pub mod update;
 
 pub use discover::{detect_running, launch_game, GameLocation};
 pub use logparse::{LogParser, ParsedLog};
@@ -18,6 +19,7 @@ pub use pob::{apply_pob, decode_pob, fetch_pob, PobBuild};
 pub use regexes::{default_presets, vendor_gem_regex};
 pub use route::{build_route, install_build};
 pub use state::AppState;
+pub use update::{check_for_update, install_archive, restart_installed, UpdateOutcome, VERSION};
 pub use store::{
     list_characters, load_catalog, load_character, load_regex_presets, load_settings, read_log_tail,
     save_catalog, save_character, save_regex_presets, save_settings, LogFollow,

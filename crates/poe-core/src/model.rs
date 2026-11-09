@@ -146,7 +146,7 @@ impl Default for Hotkeys {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SavedInstall {
     pub kind: InstallKind,
     pub install_dir: String,
@@ -173,11 +173,17 @@ pub struct Settings {
     pub poe_leveling_url: String,
     #[serde(default = "default_show_landmarks")]
     pub show_landmarks: bool,
+    #[serde(default = "default_auto_update")]
+    pub auto_update: bool,
     #[serde(default)]
     pub landmarks: Vec<crate::landmarks::Landmark>,
 }
 
 fn default_show_landmarks() -> bool {
+    true
+}
+
+fn default_auto_update() -> bool {
     true
 }
 
@@ -201,6 +207,7 @@ impl Default for Settings {
             active_regex: 0,
             poe_leveling_url: "https://poe-leveling.com/".into(),
             show_landmarks: true,
+            auto_update: true,
             landmarks: crate::landmarks::default_landmarks(),
         }
     }
@@ -475,6 +482,7 @@ mod tests {
         assert!(!settings.acts);
         assert!(settings.gems);
         assert!(settings.show_landmarks);
+        assert!(settings.auto_update);
         assert!(settings.experience_chosen);
     }
 
@@ -492,8 +500,10 @@ mod tests {
     fn saved_settings_without_the_landmarks_switch_stay_on() {
         let mut value = serde_json::to_value(Settings::default()).unwrap();
         value.as_object_mut().unwrap().remove("show_landmarks");
+        value.as_object_mut().unwrap().remove("auto_update");
         let settings: Settings = serde_json::from_value(value).unwrap();
         assert!(settings.show_landmarks);
+        assert!(settings.auto_update);
     }
 
     #[test]

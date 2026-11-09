@@ -1,4 +1,4 @@
-use crate::draw::{Frame, Painter};
+use crate::draw::Painter;
 use crate::hypr::{self, GameWindow, Monitor};
 use anyhow::Context;
 use poe_core::{visible_lines, AppState};
@@ -20,6 +20,7 @@ use smithay_client_toolkit::shm::slot::SlotPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use std::os::fd::AsRawFd;
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     let conn = Connection::connect_to_env().context("wayland connection")?;
@@ -46,6 +47,11 @@ pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         last_sig: String::new(),
         hits: Vec::new(),
         bound_output: None,
+        button_layer: None,
+        last_ipc: Instant::now() - Duration::from_secs(1),
+        cached_window: None,
+        cached_monitors: Vec::new(),
+        cached_cursor: None,
     };
     loop {
         dispatch_timeout(&conn, &mut queue, &mut app, 40)?;
@@ -125,6 +131,11 @@ struct Overlay {
     last_sig: String,
     hits: Vec<crate::draw::Hit>,
     bound_output: Option<u32>,
+    button_layer: Option<LayerSurface>,
+    last_ipc: Instant,
+    cached_window: Option<GameWindow>,
+    cached_monitors: Vec<Monitor>,
+    cached_cursor: Option<(i32, i32)>,
 }
 
 impl Overlay {
@@ -165,12 +176,18 @@ impl Overlay {
             self.unmap();
             return;
         }
-        let Some(window) = hypr::game_window().filter(|w| w.focused && w.w > 0 && w.h > 0) else {
+        if self.last_ipc.elapsed() > Duration::from_millis(200) {
+            self.cached_window = hypr::game_window().filter(|w| w.focused && w.w > 0 && w.h > 0);
+            self.cached_monitors = if self.cached_window.is_some() { hypr::monitors() } else { Vec::new() };
+            self.cached_cursor = if self.cached_window.is_some() { hypr::cursor() } else { None };
+            self.last_ipc = Instant::now();
+        }
+        let Some(window) = self.cached_window.clone() else {
             self.unmap();
             return;
         };
-        let monitors = hypr::monitors();
-        let cursor = hypr::cursor();
+        let monitors = self.cached_monitors.clone();
+        let cursor = self.cached_cursor;
         let near_button = cursor.is_some_and(|(x, y)| near_top_center(&window, x, y));
         let sig = format!(
             "{}:{}:{}:{}:{}:{}:{}",
@@ -191,7 +208,6 @@ impl Overlay {
         }
         self.bound_output = output_id;
         if self.layer.is_none() || self.last_sig != full_sig {
-            self.ensure_layer(qh, &window, &monitors, output);
             self.last_sig = full_sig.clone();
             let frame = self.painter.paint(
                 window.w,
@@ -203,64 +219,137 @@ impl Overlay {
                 snap.corner,
                 near_button,
             );
-            self.present(qh, &frame, snap.capture);
+            let [px, py, pw, ph] = frame.panel;
+            let (ox, oy) = monitor_origin(&window, &monitors);
+            self.ensure_layer(qh, output.clone(), window.x - ox + px, window.y - oy + py, pw.max(1) as u32, ph.max(1) as u32);
+            self.present(qh, frame.width, frame.height, &frame.bgra, &frame.hits, snap.capture);
             self.hits = frame.hits;
+            if let Some(button) = frame.button {
+                self.ensure_button(
+                    qh,
+                    output,
+                    window.x - ox + button.x,
+                    window.y - oy + button.y,
+                    button.w,
+                    button.h,
+                );
+                self.present_button(button.w, button.h, &button.bgra);
+            } else {
+                self.button_layer = None;
+            }
         }
     }
 
     fn ensure_layer(
         &mut self,
         qh: &QueueHandle<Self>,
-        window: &GameWindow,
-        monitors: &[Monitor],
         output: Option<wl_output::WlOutput>,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
     ) {
-        if self.layer.is_some() {
-            if let Some(layer) = &self.layer {
-                position_layer(layer, window, monitors);
-            }
-            return;
+        if self.layer.is_none() {
+            let surface = self.compositor.create_surface(qh);
+            let layer = self.layer_shell.create_layer_surface(
+                qh,
+                surface,
+                Layer::Top,
+                Some("RustyExile"),
+                output.as_ref(),
+            );
+            layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+            layer.set_exclusive_zone(0);
+            self.layer = Some(layer);
         }
-        let surface = self.compositor.create_surface(qh);
-        let layer = self.layer_shell.create_layer_surface(
-            qh,
-            surface,
-            Layer::Top,
-            Some("RustyExile"),
-            output.as_ref(),
-        );
-        layer.set_anchor(Anchor::TOP | Anchor::LEFT);
-        layer.set_keyboard_interactivity(KeyboardInteractivity::None);
-        layer.set_exclusive_zone(-1);
-        position_layer(&layer, window, monitors);
-        layer.commit();
-        self.layer = Some(layer);
+        if let Some(layer) = &self.layer {
+            place_layer(layer, x, y, width, height);
+        }
+    }
+
+    fn ensure_button(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        output: Option<wl_output::WlOutput>,
+        x: i32,
+        y: i32,
+        width: u32,
+        height: u32,
+    ) {
+        if self.button_layer.is_none() {
+            let surface = self.compositor.create_surface(qh);
+            let layer = self.layer_shell.create_layer_surface(
+                qh,
+                surface,
+                Layer::Top,
+                Some("RustyExile-config"),
+                output.as_ref(),
+            );
+            layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+            layer.set_exclusive_zone(0);
+            self.button_layer = Some(layer);
+        }
+        if let Some(layer) = &self.button_layer {
+            place_layer(layer, x, y, width, height);
+        }
     }
 
     fn unmap(&mut self) {
         self.layer = None;
+        self.button_layer = None;
         self.last_sig.clear();
         self.hits.clear();
     }
 
-    fn present(&mut self, qh: &QueueHandle<Self>, frame: &Frame, capture_tasks: bool) {
+    fn present(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        width: u32,
+        height: u32,
+        bgra: &[u8],
+        hits: &[crate::draw::Hit],
+        capture_tasks: bool,
+    ) {
         let Some(layer) = &self.layer else {
             return;
         };
-        let stride = frame.width as i32 * 4;
+        let stride = width as i32 * 4;
         let Ok((buffer, canvas)) = self.pool.create_buffer(
-            frame.width as i32,
-            frame.height as i32,
+            width as i32,
+            height as i32,
             stride,
             wl_shm::Format::Argb8888,
         ) else {
             return;
         };
-        let copy = frame.bgra.len().min(canvas.len());
-        canvas[..copy].copy_from_slice(&frame.bgra[..copy]);
+        let copy = bgra.len().min(canvas.len());
+        canvas[..copy].copy_from_slice(&bgra[..copy]);
         let surface = layer.wl_surface().clone();
-        set_input_region(&self.compositor, qh, &surface, frame, capture_tasks);
-        surface.damage_buffer(0, 0, frame.width as i32, frame.height as i32);
+        set_input_region(&self.compositor, qh, &surface, hits, capture_tasks);
+        surface.damage_buffer(0, 0, width as i32, height as i32);
+        let _ = buffer.attach_to(&surface);
+        layer.commit();
+    }
+
+    fn present_button(&mut self, width: u32, height: u32, bgra: &[u8]) {
+        let Some(layer) = &self.button_layer else {
+            return;
+        };
+        let stride = width as i32 * 4;
+        let Ok((buffer, canvas)) = self.pool.create_buffer(
+            width as i32,
+            height as i32,
+            stride,
+            wl_shm::Format::Argb8888,
+        ) else {
+            return;
+        };
+        let copy = bgra.len().min(canvas.len());
+        canvas[..copy].copy_from_slice(&bgra[..copy]);
+        let surface = layer.wl_surface().clone();
+        surface.damage_buffer(0, 0, width as i32, height as i32);
         let _ = buffer.attach_to(&surface);
         layer.commit();
     }
@@ -270,12 +359,12 @@ fn set_input_region(
     compositor: &CompositorState,
     qh: &QueueHandle<Overlay>,
     surface: &wl_surface::WlSurface,
-    frame: &Frame,
+    hits: &[crate::draw::Hit],
     capture_tasks: bool,
 ) {
     let region = compositor.wl_compositor().create_region(qh, RegionData);
-    for hit in &frame.hits {
-        if hit.config || capture_tasks {
+    if capture_tasks {
+        for hit in hits {
             region.add(hit.x, hit.y, hit.w, hit.h);
         }
     }
@@ -283,15 +372,18 @@ fn set_input_region(
     region.destroy();
 }
 
-fn position_layer(layer: &LayerSurface, window: &GameWindow, monitors: &[Monitor]) {
+fn place_layer(layer: &LayerSurface, x: i32, y: i32, width: u32, height: u32) {
+    layer.set_size(width, height);
+    layer.set_margin(y, 0, 0, x);
+}
+
+fn monitor_origin(window: &GameWindow, monitors: &[Monitor]) -> (i32, i32) {
     let monitor = monitors.iter().find(|m| m.id == window.monitor).or_else(|| {
         monitors.iter().find(|m| {
             window.x >= m.x && window.y >= m.y && window.x < m.x + m.w && window.y < m.y + m.h
         })
     });
-    let (ox, oy) = monitor.map(|m| (m.x, m.y)).unwrap_or((0, 0));
-    layer.set_size(window.w, window.h);
-    layer.set_margin(window.y - oy, 0, 0, window.x - ox);
+    monitor.map(|m| (m.x, m.y)).unwrap_or((0, 0))
 }
 
 fn near_top_center(window: &GameWindow, x: i32, y: i32) -> bool {
@@ -405,14 +497,22 @@ impl PointerHandler for Overlay {
             }
             let x = event.position.0 as i32;
             let y = event.position.1 as i32;
+            let on_button = self
+                .button_layer
+                .as_ref()
+                .is_some_and(|layer| layer.wl_surface().id() == event.surface.id());
+            if on_button {
+                if let Ok(mut shared) = self.shared.lock() {
+                    shared.show_config = true;
+                }
+                continue;
+            }
             let hit = self.hits.iter().find(|hit| {
                 x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h
             });
             let Some(hit) = hit else { continue };
             let Ok(mut shared) = self.shared.lock() else { continue };
-            if hit.config {
-                shared.show_config = true;
-            } else if shared.ctrl_down && shared.alt_down {
+            if shared.ctrl_down && shared.alt_down {
                 if let Some(character) = shared.active_character_mut() {
                     poe_core::force_complete(&mut character.progress, &hit.id);
                     shared.dirty_characters = true;

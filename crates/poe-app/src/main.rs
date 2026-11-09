@@ -87,10 +87,17 @@ fn watch_game(state: Arc<Mutex<AppState>>) {
             cached = detect_running();
         }
         let detected = cached.clone();
+        let mut open_log = None;
+        let mut chat = None;
+        let mut copy = None;
+        let mut paste = None;
         if let Ok(mut app) = state.lock() {
             if let Some(game) = &detected {
-                app.settings.install = Some(game.saved());
-                app.dirty_settings = true;
+                let saved = game.saved();
+                if app.settings.install.as_ref() != Some(&saved) {
+                    app.settings.install = Some(saved);
+                    app.dirty_settings = true;
+                }
                 app.running = Some(game.clone());
             } else {
                 app.running = None;
@@ -103,38 +110,45 @@ fn watch_game(state: Arc<Mutex<AppState>>) {
             if let Some(path) = path {
                 if path != followed {
                     followed = path.clone();
-                    follow = LogFollow::open(PathBuf::from(&path));
-                    parser = LogParser::default();
-                    adopt_recent(&mut app, PathBuf::from(&path));
+                    open_log = Some(PathBuf::from(path));
                 }
             }
-            let chat = app.status.strip_prefix("chat:").map(str::to_string);
-            if let Some(text) = chat {
+            if let Some(text) = app.status.strip_prefix("chat:").map(str::to_string) {
                 app.status = "Opening chat.".into();
-                drop(app);
-                match send_chat_line(&text) {
-                    Ok(()) => {
-                        if let Ok(mut app) = state.lock() {
-                            app.status = format!("Sent {text}");
-                        }
-                    }
-                    Err(err) => {
-                        if let Ok(mut app) = state.lock() {
-                            app.status = format!("Could not send chat. {err}");
-                        }
+                chat = Some(text);
+            } else if let Some(regex) = app.status.strip_prefix("copy:").map(str::to_string) {
+                app.status = "Copied to the clipboard.".into();
+                copy = Some(regex);
+            } else if let Some(regex) = app.status.strip_prefix("paste:").map(str::to_string) {
+                app.status = "Pasting vendor regex.".into();
+                paste = Some(regex);
+            }
+        }
+        if let Some(path) = open_log {
+            follow = LogFollow::open(path.clone());
+            parser = LogParser::default();
+            let tail = read_log_tail(&path, 256 * 1024);
+            if let Ok(mut app) = state.lock() {
+                adopt_recent(&mut app, tail.as_deref());
+            }
+        }
+        if let Some(text) = chat {
+            match send_chat_line(&text) {
+                Ok(()) => {
+                    if let Ok(mut app) = state.lock() {
+                        app.status = format!("Sent {text}");
                     }
                 }
-            } else if app.status.starts_with("copy:") {
-                let regex = app.status.trim_start_matches("copy:").to_string();
-                app.status = "Copied to the clipboard.".into();
-                drop(app);
-                let _ = copy_regex(&regex);
-            } else if app.status.starts_with("paste:") {
-                let regex = app.status.trim_start_matches("paste:").to_string();
-                app.status = "Pasting vendor regex.".into();
-                drop(app);
-                let _ = paste_regex(&regex);
+                Err(err) => {
+                    if let Ok(mut app) = state.lock() {
+                        app.status = format!("Could not send chat. {err}");
+                    }
+                }
             }
+        } else if let Some(regex) = copy {
+            let _ = copy_regex(&regex);
+        } else if let Some(regex) = paste {
+            let _ = paste_regex(&regex);
         }
         if let Some(follow) = follow.as_mut() {
             for line in follow.poll() {
@@ -153,8 +167,8 @@ fn watch_game(state: Arc<Mutex<AppState>>) {
     }
 }
 
-fn adopt_recent(app: &mut AppState, path: PathBuf) {
-    let Some(text) = read_log_tail(&path, 256 * 1024) else {
+fn adopt_recent(app: &mut AppState, text: Option<&str>) {
+    let Some(text) = text else {
         return;
     };
     let mut parser = LogParser::default();
@@ -229,24 +243,39 @@ fn ensure_character(app: &mut AppState, name: &str, class_name: &str) {
 }
 
 fn persist(state: &Mutex<AppState>) {
-    let Ok(mut app) = state.lock() else { return };
-    if app.dirty_settings {
-        let _ = save_settings(&app.settings);
-        app.dirty_settings = false;
+    let snapshot = {
+        let Ok(mut app) = state.lock() else { return };
+        let settings = app.dirty_settings.then(|| {
+            app.dirty_settings = false;
+            app.settings.clone()
+        });
+        let catalog = app.dirty_catalog.then(|| {
+            app.dirty_catalog = false;
+            app.catalog.clone()
+        });
+        let regex = app.dirty_regex.then(|| {
+            app.dirty_regex = false;
+            app.regex_presets.clone()
+        });
+        let characters = app.dirty_characters.then(|| {
+            app.dirty_characters = false;
+            app.characters.clone()
+        });
+        (settings, catalog, regex, characters)
+    };
+    if let Some(settings) = snapshot.0 {
+        let _ = save_settings(&settings);
     }
-    if app.dirty_catalog {
-        let _ = save_catalog(&app.catalog);
-        app.dirty_catalog = false;
+    if let Some(catalog) = snapshot.1 {
+        let _ = save_catalog(&catalog);
     }
-    if app.dirty_regex {
-        let _ = save_regex_presets(&app.regex_presets);
-        app.dirty_regex = false;
+    if let Some(regex) = snapshot.2 {
+        let _ = save_regex_presets(&regex);
     }
-    if app.dirty_characters {
-        for character in &app.characters {
+    if let Some(characters) = snapshot.3 {
+        for character in &characters {
             let _ = save_character(character);
         }
-        app.dirty_characters = false;
     }
 }
 
