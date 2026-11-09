@@ -4,17 +4,19 @@ use std::fs;
 use std::path::PathBuf;
 
 pub fn root_dir() -> PathBuf {
-    directories::ProjectDirs::from("com", "poe-campaign", "poe-campaign")
+    directories::ProjectDirs::from("com", "RustyExile", "RustyExile")
         .map(|d| d.data_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("poe-campaign-data"))
+        .unwrap_or_else(|| PathBuf::from("RustyExile-data"))
 }
 
 pub fn load_settings() -> Settings {
     let path = root_dir().join("settings.json");
-    fs::read_to_string(path)
+    let mut settings: Settings = fs::read_to_string(path)
         .ok()
         .and_then(|text| serde_json::from_str(&text).ok())
-        .unwrap_or_default()
+        .unwrap_or_default();
+    settings.landmarks = crate::landmarks::reconcile_landmarks(&settings.landmarks);
+    settings
 }
 
 pub fn save_settings(settings: &Settings) -> anyhow::Result<()> {

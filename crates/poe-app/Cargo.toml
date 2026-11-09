@@ -1,5 +1,5 @@
 [package]
-name = "poe-campaign"
+name = "RustyExile"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -18,3 +18,4 @@ evdev = "0.13"
 ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
+ksni = { version = "0.3.7", features = ["blocking"] }

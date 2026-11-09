@@ -12,6 +12,7 @@ pub struct GameWindow {
     pub h: u32,
     pub focused: bool,
     pub monitor: i64,
+    pub address: String,
     #[allow(dead_code)]
     pub title: String,
 }
@@ -32,6 +33,8 @@ pub fn command(request: &str) -> anyhow::Result<String> {
     let runtime = std::env::var("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR")?;
     let path = PathBuf::from(runtime).join("hypr").join(sig).join(".socket.sock");
     let mut stream = UnixStream::connect(path)?;
+    stream.set_read_timeout(Some(std::time::Duration::from_millis(300)))?;
+    stream.set_write_timeout(Some(std::time::Duration::from_millis(300)))?;
     stream.write_all(request.as_bytes())?;
     stream.shutdown(std::net::Shutdown::Write)?;
     let mut out = String::new();
@@ -62,6 +65,7 @@ pub fn game_window() -> Option<GameWindow> {
             h: size.get(1)?.as_u64()? as u32,
             focused: active_addr.as_deref() == Some(address),
             monitor: client.get("monitor").and_then(|v| v.as_i64()).unwrap_or(0),
+            address: address.to_string(),
             title: title.to_string(),
         })
     })
@@ -95,9 +99,58 @@ pub fn cursor() -> Option<(i32, i32)> {
 }
 
 pub fn send_paste() -> anyhow::Result<()> {
-    command("dispatch sendshortcut CTRL, A, activewindow")?;
+    let window = game_selector();
+    send_shortcut("CTRL", "A", &window)?;
     std::thread::sleep(std::time::Duration::from_millis(40));
-    command("dispatch sendshortcut CTRL, V, activewindow")?;
+    send_shortcut("CTRL", "V", &window)?;
+    Ok(())
+}
+
+pub fn send_chat() -> anyhow::Result<()> {
+    let Some(window) = game_window() else {
+        anyhow::bail!("Path of Exile is not running");
+    };
+    let selector = selector_for(&window.address);
+    if !selector.is_empty() {
+        let _ = command(&format!("dispatch hl.dsp.focus({{ window = \"{selector}\" }})"));
+    }
+    std::thread::sleep(std::time::Duration::from_millis(90));
+    send_shortcut("", "return", &selector)?;
+    std::thread::sleep(std::time::Duration::from_millis(70));
+    send_shortcut("CTRL", "A", &selector)?;
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    send_shortcut("CTRL", "V", &selector)?;
+    std::thread::sleep(std::time::Duration::from_millis(40));
+    send_shortcut("", "return", &selector)?;
+    Ok(())
+}
+
+fn game_selector() -> String {
+    game_window().map(|window| selector_for(&window.address)).unwrap_or_default()
+}
+
+fn selector_for(address: &str) -> String {
+    if address.is_empty() {
+        String::new()
+    } else if address.starts_with("address:") {
+        address.to_string()
+    } else {
+        format!("address:{address}")
+    }
+}
+
+fn send_shortcut(mods: &str, key: &str, window: &str) -> anyhow::Result<()> {
+    let target = if window.is_empty() {
+        String::new()
+    } else {
+        format!(", window = \"{window}\"")
+    };
+    let out = command(&format!(
+        "dispatch hl.dsp.send_shortcut({{ mods = \"{mods}\", key = \"{key}\"{target} }})"
+    ))?;
+    if out.contains("error:") || out.contains("not found") {
+        anyhow::bail!(out.trim().to_string());
+    }
     Ok(())
 }
 

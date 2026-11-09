@@ -10,11 +10,11 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, SendInput, UnregisterHotKey, INPUT,
     INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL,
-    MOD_NOREPEAT, MOD_SHIFT, VIRTUAL_KEY, VK_A, VK_CONTROL, VK_MENU, VK_V,
+    MOD_NOREPEAT, MOD_SHIFT, VIRTUAL_KEY, VK_A, VK_CONTROL, VK_MENU, VK_RETURN, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows, GetCursorPos, GetForegroundWindow,
-    GetWindowRect, IsWindowVisible,
+    GetWindowRect, IsWindowVisible, SetForegroundWindow,
     PeekMessageW, RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage,
     UpdateLayeredWindow, CW_USEDEFAULT, GWLP_HWNDPARENT, GWL_EXSTYLE, HWND_TOP, MSG, PM_REMOVE,
     SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, ULW_ALPHA, WM_HOTKEY, WM_LBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED,
@@ -60,6 +60,33 @@ pub fn send_paste() -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn send_chat() -> anyhow::Result<()> {
+    unsafe {
+        let Some(hwnd) = find_poe_window() else {
+            anyhow::bail!("Path of Exile is not running");
+        };
+        let _ = SetForegroundWindow(hwnd);
+        std::thread::sleep(std::time::Duration::from_millis(90));
+        tap(VK_RETURN)?;
+        std::thread::sleep(std::time::Duration::from_millis(70));
+        send_paste()?;
+        std::thread::sleep(std::time::Duration::from_millis(40));
+        tap(VK_RETURN)?;
+    }
+    Ok(())
+}
+
+fn tap(vk: VIRTUAL_KEY) -> anyhow::Result<()> {
+    unsafe {
+        let inputs = [key_input(vk, false), key_input(vk, true)];
+        let sent = SendInput(&inputs, std::mem::size_of::<INPUT>() as i32);
+        if sent == 0 {
+            anyhow::bail!("SendInput failed");
+        }
+    }
+    Ok(())
+}
+
 fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,
@@ -76,7 +103,7 @@ fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
 }
 
 unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
-    let class_name = w!("poe_campaign_overlay");
+    let class_name = w!("rusty_exile_overlay");
     let class = WNDCLASSW {
         lpfnWndProc: Some(wnd_proc),
         lpszClassName: class_name,
@@ -140,13 +167,20 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         let lines = shared
             .active_character()
             .map(|character| {
-                visible_lines(
+                let mut lines = visible_lines(
                     &character.route,
                     &character.progress,
                     shared.settings.acts,
                     shared.settings.gems,
                     shared.settings.tips,
-                )
+                );
+                if shared.settings.show_landmarks {
+                    lines.extend(poe_core::visible_landmarks(
+                        &shared.settings.landmarks,
+                        &character.progress,
+                    ));
+                }
+                lines
             })
             .unwrap_or_default();
         let sig = format!("{}:{}:{}:{}:{near}:{ctrl}:{alt}:{}", rect.left, rect.top, width, height, lines.len());
@@ -169,7 +203,7 @@ unsafe fn create_popup(class_name: windows::core::PCWSTR) -> anyhow::Result<HWND
     Ok(CreateWindowExW(
         WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW,
         class_name,
-        w!("poe-campaign"),
+        w!("RustyExile"),
         WS_POPUP,
         CW_USEDEFAULT,
         CW_USEDEFAULT,
@@ -183,20 +217,34 @@ unsafe fn create_popup(class_name: windows::core::PCWSTR) -> anyhow::Result<HWND
 }
 
 unsafe fn sync_hotkeys(hwnd: HWND, shared: &AppState, previous: &mut String) {
+    let chat = shared
+        .settings
+        .hotkeys
+        .chat
+        .iter()
+        .map(|cmd| format!("{}={}", cmd.hotkey, cmd.text))
+        .collect::<Vec<_>>()
+        .join("|");
     let next = format!(
-        "{}|{}|{}",
+        "{}|{}|{}|{chat}",
         shared.settings.hotkeys.toggle_hud, shared.settings.hotkeys.open_config, shared.settings.hotkeys.paste_regex
     );
     if next == *previous {
         return;
     }
     *previous = next;
-    for id in 1..=3 {
+    for id in 1..=64 {
         let _ = UnregisterHotKey(Some(hwnd), id);
     }
     bind_hotkey(hwnd, 1, &shared.settings.hotkeys.toggle_hud);
     bind_hotkey(hwnd, 2, &shared.settings.hotkeys.open_config);
     bind_hotkey(hwnd, 3, &shared.settings.hotkeys.paste_regex);
+    for (index, cmd) in shared.settings.hotkeys.chat.iter().enumerate() {
+        if cmd.hotkey.is_empty() || cmd.text.is_empty() {
+            continue;
+        }
+        bind_hotkey(hwnd, 10 + index as i32, &cmd.hotkey);
+    }
 }
 
 unsafe fn bind_hotkey(hwnd: HWND, id: i32, chord: &str) {
@@ -230,6 +278,9 @@ fn on_hotkey(id: i32) {
     let Some(app) = click.app.clone() else { return };
     drop(click);
     let Ok(mut app) = app.lock() else { return };
+    if app.capturing_hotkey {
+        return;
+    }
     match id {
         1 => app.hud_enabled = !app.hud_enabled,
         2 => app.show_config = true,
@@ -251,6 +302,14 @@ fn on_hotkey(id: i32) {
                     .unwrap_or_default(),
             );
             app.status = format!("paste:{regex}");
+        }
+            id if id >= 10 => {
+            let index = (id - 10) as usize;
+            if let Some(cmd) = app.settings.hotkeys.chat.get(index) {
+                if !cmd.text.is_empty() && !cmd.hotkey.is_empty() {
+                    app.status = format!("chat:{}", cmd.text);
+                }
+            }
         }
         _ => {}
     }

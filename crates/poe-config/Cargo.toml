@@ -10,3 +10,4 @@ poe-core = { path = "../poe-core" }
 poe-data = { path = "../poe-data" }
 eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+arboard = "3"

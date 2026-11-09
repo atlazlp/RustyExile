@@ -98,6 +98,16 @@ impl smithay_client_toolkit::dispatch2::Dispatch2<wl_region::WlRegion, Overlay> 
     }
 }
 
+struct HudSnap {
+    enabled: bool,
+    opacity: f32,
+    scale: f32,
+    corner: poe_core::HudCorner,
+    theme: poe_core::Theme,
+    capture: bool,
+    lines: Vec<poe_core::VisibleLine>,
+}
+
 struct Overlay {
     registry_state: RegistryState,
     output_state: OutputState,
@@ -119,17 +129,46 @@ struct Overlay {
 
 impl Overlay {
     fn sync(&mut self, qh: &QueueHandle<Self>) {
-        let Ok(shared) = self.shared.lock() else {
-            return;
+        let snap = {
+            let Ok(shared) = self.shared.lock() else {
+                return;
+            };
+            HudSnap {
+                enabled: shared.running.is_some() && shared.hud_enabled && shared.settings.experience_chosen,
+                opacity: shared.settings.opacity,
+                scale: shared.settings.scale,
+                corner: shared.settings.corner,
+                theme: shared.settings.theme.clone(),
+                capture: shared.ctrl_down && shared.alt_down,
+                lines: shared
+                    .active_character()
+                    .map(|character| {
+                        let mut lines = visible_lines(
+                            &character.route,
+                            &character.progress,
+                            shared.settings.acts,
+                            shared.settings.gems,
+                            shared.settings.tips,
+                        );
+                        if shared.settings.show_landmarks {
+                            lines.extend(poe_core::visible_landmarks(
+                                &shared.settings.landmarks,
+                                &character.progress,
+                            ));
+                        }
+                        lines
+                    })
+                    .unwrap_or_default(),
+            }
         };
-        let enabled = shared.running.is_some() && shared.hud_enabled && shared.settings.experience_chosen;
-        let window = hypr::game_window().filter(|w| w.focused && w.w > 0 && w.h > 0);
-        if !enabled || window.is_none() {
-            drop(shared);
+        if !snap.enabled {
             self.unmap();
             return;
         }
-        let window = window.unwrap();
+        let Some(window) = hypr::game_window().filter(|w| w.focused && w.w > 0 && w.h > 0) else {
+            self.unmap();
+            return;
+        };
         let monitors = hypr::monitors();
         let cursor = hypr::cursor();
         let near_button = cursor.is_some_and(|(x, y)| near_top_center(&window, x, y));
@@ -140,30 +179,11 @@ impl Overlay {
             window.w,
             window.h,
             near_button,
-            shared.settings.opacity,
-            shared.settings.corner as u8
+            snap.opacity,
+            snap.corner as u8
         );
-        let character = shared.active_character().cloned();
-        let lines = character
-            .as_ref()
-            .map(|c| {
-                visible_lines(
-                    &c.route,
-                    &c.progress,
-                    shared.settings.acts,
-                    shared.settings.gems,
-                    shared.settings.tips,
-                )
-            })
-            .unwrap_or_default();
-        let theme = shared.settings.theme.clone();
-        let opacity = shared.settings.opacity;
-        let scale = shared.settings.scale;
-        let corner = shared.settings.corner;
-        let line_sig = lines.iter().map(|l| l.event_id.clone()).collect::<Vec<_>>().join("|");
-        let capture = shared.ctrl_down && shared.alt_down;
-        let full_sig = format!("{sig}|{capture}|{line_sig}");
-        drop(shared);
+        let line_sig = snap.lines.iter().map(|l| l.event_id.clone()).collect::<Vec<_>>().join("|");
+        let full_sig = format!("{sig}|{}|{line_sig}", snap.capture);
         let output = pick_output(&self.output_state, &window, &monitors);
         let output_id = output.as_ref().and_then(|output| self.output_state.info(output).map(|info| info.id));
         if self.layer.is_some() && output_id.is_some() && self.bound_output != output_id {
@@ -176,14 +196,14 @@ impl Overlay {
             let frame = self.painter.paint(
                 window.w,
                 window.h,
-                &lines,
-                &theme,
-                opacity,
-                scale,
-                corner,
+                &snap.lines,
+                &snap.theme,
+                snap.opacity,
+                snap.scale,
+                snap.corner,
                 near_button,
             );
-            self.present(qh, &frame, capture);
+            self.present(qh, &frame, snap.capture);
             self.hits = frame.hits;
         }
     }
@@ -206,7 +226,7 @@ impl Overlay {
             qh,
             surface,
             Layer::Top,
-            Some("poe-campaign"),
+            Some("RustyExile"),
             output.as_ref(),
         );
         layer.set_anchor(Anchor::TOP | Anchor::LEFT);

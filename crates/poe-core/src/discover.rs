@@ -1,4 +1,5 @@
 use crate::model::{InstallKind, SavedInstall};
+use anyhow::Context;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
@@ -161,6 +162,71 @@ fn read_environ(pid: u32) -> Vec<(String, String)> {
     {
         let _ = pid;
         Vec::new()
+    }
+}
+
+pub fn launch_game(install: Option<&SavedInstall>) -> anyhow::Result<()> {
+    if let Some(install) = install {
+        if install.kind == InstallKind::Standalone {
+            if let Some(exe) = standalone_exe(Path::new(&install.install_dir)) {
+                return spawn_program(&exe.to_string_lossy(), &[]);
+            }
+        }
+    }
+    launch_steam()
+}
+
+fn standalone_exe(dir: &Path) -> Option<PathBuf> {
+    for name in ["PathOfExile_x64.exe", "PathOfExile.exe", "PathOfExile_x64Steam.exe", "PathOfExileSteam.exe"] {
+        let path = dir.join(name);
+        if path.is_file() {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn launch_steam() -> anyhow::Result<()> {
+    #[cfg(target_os = "windows")]
+    {
+        spawn_program("cmd", &["/C", "start", "steam://rungameid/238960"])
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        spawn_program("steam", &["steam://rungameid/238960"])
+            .or_else(|_| spawn_program("xdg-open", &["steam://rungameid/238960"]))
+    }
+}
+
+fn spawn_program(program: &str, args: &[&str]) -> anyhow::Result<()> {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                close_inherited_fds();
+                Ok(())
+            });
+        }
+        cmd.process_group(0);
+    }
+    cmd.spawn()
+        .with_context(|| format!("could not start {program}"))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn close_inherited_fds() {
+    unsafe extern "C" {
+        fn close_range(first: u32, last: u32, flags: i32) -> i32;
+    }
+    unsafe {
+        let _ = close_range(3, u32::MAX, 0);
     }
 }
 

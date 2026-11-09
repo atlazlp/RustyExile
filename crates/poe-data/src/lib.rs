@@ -5,7 +5,7 @@ use poe_core::{
 use std::path::{Path, PathBuf};
 
 pub fn assets_root() -> PathBuf {
-    if let Ok(path) = std::env::var("POE_CAMPAIGN_ASSETS") {
+    if let Ok(path) = std::env::var("RUSTY_EXILE_ASSETS") {
         return PathBuf::from(path);
     }
     let compiled = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
@@ -161,7 +161,26 @@ fn collect_gems(bucket: Option<&serde_json::Value>, source: GemSource, fallback_
     }
 }
 
-pub fn load_icon(key: &str) -> Option<RgbaImage> {
+    pub fn tray_icon_argb(size: u32) -> Option<(i32, i32, Vec<u8>)> {
+        let src = load_icon("portal")?;
+        let size = size.max(1);
+        let mut data = vec![0u8; (size * size * 4) as usize];
+        for y in 0..size {
+            for x in 0..size {
+                let sx = x * src.width() / size;
+                let sy = y * src.height() / size;
+                let pixel = src.get_pixel(sx.min(src.width() - 1), sy.min(src.height() - 1));
+                let index = ((y * size + x) * 4) as usize;
+                data[index] = pixel[3];
+                data[index + 1] = pixel[0];
+                data[index + 2] = pixel[1];
+                data[index + 3] = pixel[2];
+            }
+        }
+        Some((size as i32, size as i32, data))
+    }
+
+    pub fn load_icon(key: &str) -> Option<RgbaImage> {
     let root = assets_root().join("icons");
     let path = if let Some(name) = key.strip_prefix("gem:") {
         root.join("gems").join(poe_core::gem_icon_file(name))

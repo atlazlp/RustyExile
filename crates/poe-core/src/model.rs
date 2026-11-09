@@ -21,13 +21,13 @@ impl Experience {
     pub fn explanation(self) -> &'static str {
         match self {
             Self::Beginner => {
-                "Zone tips stay on and the act list stays on. You can change both later in the configuration."
+                "Zone tips, the act list, and landmarks stay on. You can change them later in the configuration."
             }
             Self::Intermediate => {
-                "Zone tips start off and the act list stays on. You can change both later in the configuration."
+                "Zone tips start off. The act list and landmarks stay on. You can change them later in the configuration."
             }
             Self::Advanced => {
-                "Zone tips and the act list both start off. Gems start off with the acts. You can turn any of them back on in the configuration."
+                "Zone tips and the act list start off. Gems from the build stay on, with their triggers, when the character is added. Landmarks stay on."
             }
         }
     }
@@ -70,12 +70,68 @@ impl Default for Theme {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChatCommand {
+    pub id: String,
+    pub label: String,
+    pub text: String,
+    pub hotkey: String,
+}
+
+impl ChatCommand {
+    pub fn new(label: impl Into<String>, text: impl Into<String>, hotkey: impl Into<String>) -> Self {
+        Self {
+            id: format!("chat-{}", chat_id()),
+            label: label.into(),
+            text: text.into(),
+            hotkey: hotkey.into(),
+        }
+    }
+}
+
+fn chat_id() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT: AtomicU64 = AtomicU64::new(1);
+    let tick = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    tick.wrapping_add(NEXT.fetch_add(1, Ordering::Relaxed))
+}
+
+pub fn default_chat_commands() -> Vec<ChatCommand> {
+    [
+        ("hideout", "Hideout", "/hideout", "ctrl+alt+h"),
+        ("oos", "Resync", "/oos", "ctrl+alt+o"),
+        ("remaining", "Remaining", "/remaining", "ctrl+alt+r"),
+        ("exit", "Exit to login", "/exit", "ctrl+alt+x"),
+        ("passives", "Passives", "/passives", "ctrl+alt+p"),
+        ("deaths", "Deaths", "/deaths", "ctrl+alt+d"),
+        ("leave", "Leave party", "/leave", "ctrl+alt+l"),
+        ("dnd", "Do not disturb", "/dnd", "ctrl+alt+n"),
+        ("menagerie", "Menagerie", "/menagerie", "ctrl+alt+m"),
+        ("delve", "Delve", "/delve", "ctrl+alt+e"),
+        ("kingsmarch", "Kingsmarch", "/kingsmarch", "ctrl+alt+k"),
+        ("afk", "AFK", "/afk", "ctrl+alt+a"),
+    ]
+    .into_iter()
+    .map(|(id, label, text, hotkey)| ChatCommand {
+        id: id.into(),
+        label: label.into(),
+        text: text.into(),
+        hotkey: hotkey.into(),
+    })
+    .collect()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Hotkeys {
     pub toggle_hud: String,
     pub open_config: String,
     pub paste_regex: String,
     /// Modifiers held while clicking a task to clear it. The click is separate.
     pub clear_modifiers: String,
+    #[serde(default = "default_chat_commands")]
+    pub chat: Vec<ChatCommand>,
 }
 
 impl Default for Hotkeys {
@@ -85,6 +141,7 @@ impl Default for Hotkeys {
             open_config: "ctrl+shift+o".into(),
             paste_regex: "ctrl+shift+v".into(),
             clear_modifiers: "ctrl+alt".into(),
+            chat: default_chat_commands(),
         }
     }
 }
@@ -114,6 +171,14 @@ pub struct Settings {
     pub active_character: Option<String>,
     pub active_regex: usize,
     pub poe_leveling_url: String,
+    #[serde(default = "default_show_landmarks")]
+    pub show_landmarks: bool,
+    #[serde(default)]
+    pub landmarks: Vec<crate::landmarks::Landmark>,
+}
+
+fn default_show_landmarks() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -135,6 +200,8 @@ impl Default for Settings {
             active_character: None,
             active_regex: 0,
             poe_leveling_url: "https://poe-leveling.com/".into(),
+            show_landmarks: true,
+            landmarks: crate::landmarks::default_landmarks(),
         }
     }
 }
@@ -143,6 +210,7 @@ impl Settings {
     pub fn apply_experience(&mut self, experience: Experience) {
         self.experience = experience;
         self.experience_chosen = true;
+        self.show_landmarks = true;
         match experience {
             Experience::Beginner => {
                 self.tips = true;
@@ -157,7 +225,7 @@ impl Settings {
             Experience::Advanced => {
                 self.tips = false;
                 self.acts = false;
-                self.gems = false;
+                self.gems = true;
             }
         }
     }
@@ -393,4 +461,47 @@ pub fn gem_icon_file(gem_name: &str) -> String {
         }
     }
     format!("{out}_inventory_icon.png")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn advanced_keeps_build_gems_on() {
+        let mut settings = Settings::default();
+        settings.apply_experience(Experience::Advanced);
+        assert!(!settings.tips);
+        assert!(!settings.acts);
+        assert!(settings.gems);
+        assert!(settings.show_landmarks);
+        assert!(settings.experience_chosen);
+    }
+
+    #[test]
+    fn landmarks_stay_on_for_every_profile() {
+        for experience in [Experience::Beginner, Experience::Intermediate, Experience::Advanced] {
+            let mut settings = Settings::default();
+            settings.show_landmarks = false;
+            settings.apply_experience(experience);
+            assert!(settings.show_landmarks);
+        }
+    }
+
+    #[test]
+    fn saved_settings_without_the_landmarks_switch_stay_on() {
+        let mut value = serde_json::to_value(Settings::default()).unwrap();
+        value.as_object_mut().unwrap().remove("show_landmarks");
+        let settings: Settings = serde_json::from_value(value).unwrap();
+        assert!(settings.show_landmarks);
+    }
+
+    #[test]
+    fn saved_hotkeys_without_chat_gain_the_defaults() {
+        let hotkeys: Hotkeys = serde_json::from_str(
+            r#"{"toggle_hud":"ctrl+shift+h","open_config":"ctrl+shift+o","paste_regex":"ctrl+shift+v","clear_modifiers":"ctrl+alt"}"#,
+        )
+        .unwrap();
+        assert!(hotkeys.chat.iter().any(|cmd| cmd.text == "/hideout"));
+    }
 }

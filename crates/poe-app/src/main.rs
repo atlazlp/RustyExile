@@ -7,6 +7,9 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
+#[cfg(target_os = "linux")]
+mod tray;
+
 fn main() {
     let state = Arc::new(Mutex::new(load_state()));
     let watch = Arc::clone(&state);
@@ -20,13 +23,30 @@ fn main() {
         .spawn(move || hotkeys(keys))
         .ok();
     poe_overlay::spawn(Arc::clone(&state));
+    #[cfg(target_os = "linux")]
+    {
+        let tray_state = Arc::clone(&state);
+        std::thread::Builder::new()
+            .name("poe-tray".into())
+            .spawn(move || {
+                if let Err(err) = tray::run(tray_state) {
+                    eprintln!("tray icon unavailable: {err}");
+                }
+            })
+            .ok();
+    }
     if let Err(err) = poe_config::run(state) {
         eprintln!("configuration window closed: {err}");
     }
 }
 
 fn load_state() -> AppState {
-    let settings = load_settings();
+    let mut settings = load_settings();
+    let mut dirty_settings = false;
+    if settings.experience == poe_core::Experience::Advanced && !settings.tips && !settings.acts && !settings.gems {
+        settings.gems = true;
+        dirty_settings = true;
+    }
     let embedded = poe_data::load_catalog();
     let catalog = load_catalog(embedded);
     let regex_presets = load_regex_presets(poe_data::load_regex_defaults());
@@ -40,12 +60,13 @@ fn load_state() -> AppState {
         hud_enabled: true,
         running: None,
         status: String::new(),
-        dirty_settings: false,
+        dirty_settings,
         dirty_catalog: false,
         dirty_characters: false,
         dirty_regex: false,
         ctrl_down: false,
         alt_down: false,
+        capturing_hotkey: false,
     }
 }
 
@@ -54,8 +75,18 @@ fn watch_game(state: Arc<Mutex<AppState>>) {
     let mut parser = LogParser::default();
     let mut followed = String::new();
     let mut last_save = Instant::now();
+    let mut cached: Option<poe_core::GameLocation> = None;
+    let mut last_scan = Instant::now() - Duration::from_secs(5);
     loop {
-        let detected = detect_running();
+        let scan = match cached.as_ref().and_then(|game| game.pid) {
+            Some(pid) if process_alive(pid) => last_scan.elapsed() > Duration::from_secs(2),
+            _ => last_scan.elapsed() > Duration::from_millis(400),
+        };
+        if scan {
+            last_scan = Instant::now();
+            cached = detect_running();
+        }
+        let detected = cached.clone();
         if let Ok(mut app) = state.lock() {
             if let Some(game) = &detected {
                 app.settings.install = Some(game.saved());
@@ -77,7 +108,28 @@ fn watch_game(state: Arc<Mutex<AppState>>) {
                     adopt_recent(&mut app, PathBuf::from(&path));
                 }
             }
-            if app.status.starts_with("paste:") {
+            let chat = app.status.strip_prefix("chat:").map(str::to_string);
+            if let Some(text) = chat {
+                app.status = "Opening chat.".into();
+                drop(app);
+                match send_chat_line(&text) {
+                    Ok(()) => {
+                        if let Ok(mut app) = state.lock() {
+                            app.status = format!("Sent {text}");
+                        }
+                    }
+                    Err(err) => {
+                        if let Ok(mut app) = state.lock() {
+                            app.status = format!("Could not send chat. {err}");
+                        }
+                    }
+                }
+            } else if app.status.starts_with("copy:") {
+                let regex = app.status.trim_start_matches("copy:").to_string();
+                app.status = "Copied to the clipboard.".into();
+                drop(app);
+                let _ = copy_regex(&regex);
+            } else if app.status.starts_with("paste:") {
                 let regex = app.status.trim_start_matches("paste:").to_string();
                 app.status = "Pasting vendor regex.".into();
                 drop(app);
@@ -198,9 +250,33 @@ fn persist(state: &Mutex<AppState>) {
     }
 }
 
-fn paste_regex(regex: &str) -> anyhow::Result<()> {
+fn send_chat_line(text: &str) -> anyhow::Result<()> {
+    if text.trim().is_empty() {
+        anyhow::bail!("the chat text is empty");
+    }
+    copy_regex(text)?;
+    poe_overlay::send_chat()
+}
+
+fn process_alive(pid: u32) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        std::path::Path::new(&format!("/proc/{pid}")).exists()
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = pid;
+        false
+    }
+}
+fn copy_regex(regex: &str) -> anyhow::Result<()> {
     let mut clipboard = arboard::Clipboard::new()?;
     clipboard.set_text(regex.to_owned())?;
+    Ok(())
+}
+
+fn paste_regex(regex: &str) -> anyhow::Result<()> {
+    copy_regex(regex)?;
     poe_overlay::paste_into_game()?;
     Ok(())
 }
@@ -255,6 +331,9 @@ fn evdev_loop(state: Arc<Mutex<AppState>>) {
                             if let Ok(mut app) = state.lock() {
                                 app.ctrl_down = ctrl;
                                 app.alt_down = alt;
+                                if app.capturing_hotkey {
+                                    continue;
+                                }
                                 let toggle = poe_core::parse_chord(&app.settings.hotkeys.toggle_hud);
                                 let open = poe_core::parse_chord(&app.settings.hotkeys.open_config);
                                 let paste = poe_core::parse_chord(&app.settings.hotkeys.paste_regex);
@@ -265,6 +344,8 @@ fn evdev_loop(state: Arc<Mutex<AppState>>) {
                                 } else if chord_hit(&paste, ctrl, alt, shift, &name) {
                                     let regex = current_regex(&app);
                                     app.status = format!("paste:{regex}");
+                                } else if let Some(text) = chat_text(&app, ctrl, alt, shift, &name) {
+                                    queue_chat(&mut app, &text);
                                 }
                             }
                         }
@@ -282,7 +363,33 @@ fn evdev_loop(state: Arc<Mutex<AppState>>) {
 }
 
 fn chord_hit(chord: &poe_core::Chord, ctrl: bool, alt: bool, shift: bool, key: &str) -> bool {
-    chord.ctrl == ctrl && chord.alt == alt && chord.shift == shift && chord.key == key
+    !chord.key.is_empty() && chord.ctrl == ctrl && chord.alt == alt && chord.shift == shift && chord.key == key
+}
+
+fn queue_chat(app: &mut AppState, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    static LAST: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+    if let Ok(mut last) = LAST.lock() {
+        if let Some((prev, when)) = last.as_ref() {
+            if prev == text && when.elapsed() < Duration::from_millis(500) {
+                return;
+            }
+        }
+        *last = Some((text.to_string(), Instant::now()));
+    }
+    app.status = format!("chat:{text}");
+}
+
+fn chat_text(app: &AppState, ctrl: bool, alt: bool, shift: bool, key: &str) -> Option<String> {
+    app.settings.hotkeys.chat.iter().find_map(|cmd| {
+        if cmd.text.is_empty() || cmd.hotkey.is_empty() {
+            return None;
+        }
+        let chord = poe_core::parse_chord(&cmd.hotkey);
+        chord_hit(&chord, ctrl, alt, shift, key).then(|| cmd.text.clone())
+    })
 }
 
 fn current_regex(app: &AppState) -> String {
@@ -320,11 +427,18 @@ fn key_name(key: evdev::KeyCode) -> Option<String> {
 fn bind_portal(state: &Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     let shortcuts = {
         let app = state.lock().map_err(|_| anyhow::anyhow!("lock"))?;
-        vec![
-            ("toggle", app.settings.hotkeys.toggle_hud.clone()),
-            ("config", app.settings.hotkeys.open_config.clone()),
-            ("paste", app.settings.hotkeys.paste_regex.clone()),
-        ]
+        let mut shortcuts = vec![
+            ("toggle".to_string(), app.settings.hotkeys.toggle_hud.clone()),
+            ("config".to_string(), app.settings.hotkeys.open_config.clone()),
+            ("paste".to_string(), app.settings.hotkeys.paste_regex.clone()),
+        ];
+        for cmd in &app.settings.hotkeys.chat {
+            if cmd.hotkey.is_empty() || cmd.text.is_empty() {
+                continue;
+            }
+            shortcuts.push((cmd.id.clone(), cmd.hotkey.clone()));
+        }
+        shortcuts
     };
     let state = Arc::clone(state);
     std::thread::spawn(move || {
@@ -340,14 +454,14 @@ fn bind_portal(state: &Arc<Mutex<AppState>>) -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-async fn portal_session(state: Arc<Mutex<AppState>>, shortcuts: Vec<(&str, String)>) -> anyhow::Result<()> {
+async fn portal_session(state: Arc<Mutex<AppState>>, shortcuts: Vec<(String, String)>) -> anyhow::Result<()> {
     use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
     let proxy = GlobalShortcuts::new().await?;
     let session = proxy.create_session().await?;
     let bound: Vec<NewShortcut> = shortcuts
         .iter()
         .map(|(id, trigger)| {
-            NewShortcut::new(*id, *id).preferred_trigger(Some(trigger.as_str()))
+            NewShortcut::new(id.as_str(), id.as_str()).preferred_trigger(Some(trigger.as_str()))
         })
         .collect();
     proxy.bind_shortcuts(&session, &bound, None).await?;
@@ -356,6 +470,9 @@ async fn portal_session(state: Arc<Mutex<AppState>>, shortcuts: Vec<(&str, Strin
     while let Some(event) = activated.next().await {
         let id = event.shortcut_id();
         let Ok(mut app) = state.lock() else { continue };
+        if app.capturing_hotkey {
+            continue;
+        }
         match id {
             "toggle" => app.hud_enabled = !app.hud_enabled,
             "config" => app.show_config = true,
@@ -363,7 +480,14 @@ async fn portal_session(state: Arc<Mutex<AppState>>, shortcuts: Vec<(&str, Strin
                 let regex = current_regex(&app);
                 app.status = format!("paste:{regex}");
             }
-            _ => {}
+            other => {
+                if let Some(cmd) = app.settings.hotkeys.chat.iter().find(|cmd| cmd.id == other) {
+                    if !cmd.text.is_empty() {
+                        let text = cmd.text.clone();
+                        queue_chat(&mut app, &text);
+                    }
+                }
+            }
         }
     }
     Ok(())

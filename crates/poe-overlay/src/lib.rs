@@ -54,3 +54,18 @@ pub fn paste_into_game() -> anyhow::Result<()> {
 pub fn paste_into_game() -> anyhow::Result<()> {
     anyhow::bail!("vendor paste is wired for Hyprland and Windows");
 }
+
+#[cfg(target_os = "linux")]
+pub fn send_chat() -> anyhow::Result<()> {
+    hypr::send_chat()
+}
+
+#[cfg(windows)]
+pub fn send_chat() -> anyhow::Result<()> {
+    win32::send_chat()
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
+pub fn send_chat() -> anyhow::Result<()> {
+    anyhow::bail!("chat hotkeys are wired for Hyprland and Windows");
+}

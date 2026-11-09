@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=RustyExile
+GenericName=Path of Exile leveling overlay
+Comment=Path of Exile 1 campaign leveling overlay
+Exec="/home/lpacheco/Projects/RustyExile/target/release/RustyExile"
+Path=/home/lpacheco/Projects/RustyExile
+Icon=/home/lpacheco/Projects/RustyExile/assets/icons/ui/portal.png
+Terminal=false
+Categories=Game;
+StartupNotify=false
+StartupWMClass=RustyExile
