@@ -1,0 +1,15 @@
+poe-campaign is a non-commercial fan tool. It is not for sale and is not endorsed by Grinding Gear Games.
+
+Campaign routes, quests, gems, areas, and the user-interface sprites under assets/icons/ui
+(waypoint, portal, quest, town, trial, crafting, and the currency icons) come from
+HeartofPhos/exile-leveling, which is MIT licensed. Copyright notices in that project remain in force.
+
+Gem inventory icons under assets/icons/gems are from the Path of Exile Wiki
+(https://www.poewiki.net/) and are used under CC BY-NC-SA. They are vendored so the overlay
+does not hotlink the wiki. Do not sell this project or these icons.
+
+The portal scroll sprite and the extra waypoint sprite are from https://poe-leveling.com/.
+Prose from that site is not copied into this repository.
+
+Vendor-regex presets in assets/regex/presets.json are adapted from the MIT-licensed
+leveling regex list in Tysktillan/poe-leveling-overlay.

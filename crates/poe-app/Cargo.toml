@@ -1,0 +1,20 @@
+[package]
+name = "poe-campaign"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+poe-core = { path = "../poe-core" }
+poe-data = { path = "../poe-data" }
+poe-overlay = { path = "../poe-overlay" }
+poe-config = { path = "../poe-config" }
+anyhow.workspace = true
+arboard = "3"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
+ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }

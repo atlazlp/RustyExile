@@ -1,0 +1,27 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/poe-core",
+    "crates/poe-data",
+    "crates/poe-overlay",
+    "crates/poe-config",
+    "crates/poe-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+base64 = "0.22"
+flate2 = "1"
+roxmltree = "0.20"
+directories = "6"
+sysinfo = "0.35"
+ureq = "2"

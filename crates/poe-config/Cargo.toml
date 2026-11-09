@@ -1,0 +1,12 @@
+[package]
+name = "poe-config"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+poe-core = { path = "../poe-core" }
+poe-data = { path = "../poe-data" }
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts", "wayland", "x11"] }
+image = { version = "0.25", default-features = false, features = ["png"] }

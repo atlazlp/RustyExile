@@ -1,0 +1,18 @@
+[package]
+name = "poe-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+anyhow.workspace = true
+base64.workspace = true
+flate2.workspace = true
+roxmltree.workspace = true
+directories.workspace = true
+sysinfo.workspace = true
+ureq.workspace = true
