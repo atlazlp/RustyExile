@@ -253,16 +253,14 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
             (Some(x), Some(y)) => Some((x, y)),
             _ => None,
         };
+        let line_sig = lines
+            .iter()
+            .map(|line| format!("{}:{}", line.event_id, line.text))
+            .collect::<Vec<_>>()
+            .join("|");
         let sig = format!(
-            "{}:{}:{}:{}:{near}:{ctrl}:{alt}:{}:{}:{}:{:?}",
-            rect.left,
-            rect.top,
-            width,
-            height,
-            lines.len(),
-            placing,
-            show_config_button,
-            custom
+            "{}:{}:{}:{}:{near}:{ctrl}:{alt}:{opacity}:{scale}:{:?}:{line_sig}:{placing}:{show_config_button}:{custom:?}",
+            rect.left, rect.top, width, height, corner
         );
         drop(shared);
         let panel_hidden = !IsWindowVisible(panel).as_bool();

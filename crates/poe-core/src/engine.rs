@@ -34,7 +34,10 @@ fn frontier_index(route: &CharacterRoute, progress: &CharacterProgress) -> Optio
 
 fn group_passed(route: &CharacterRoute, index: usize, progress: &CharacterProgress) -> bool {
     let group = &route.groups[index];
-    if listed(&progress.skipped_groups, &group.id) || listed(&progress.cleared_groups, &group.id) {
+    if listed(&progress.skipped_groups, &group.id)
+        || listed(&progress.cleared_groups, &group.id)
+        || listed(&progress.visited_groups, &group.id)
+    {
         return true;
     }
     let Some(key) = start_key(group) else {
@@ -281,7 +284,7 @@ fn claim_zone(file: &mut CharacterFile, area_id: &str) {
         file.progress
             .skipped_groups
             .retain(|skipped_id| skipped_id != &id);
-        file.progress.anchor_group = Some(id);
+        set_anchor(file, hit);
         return;
     }
     let progress_consumed = |index: usize| anchor.is_some_and(|current| index < current);
@@ -293,7 +296,7 @@ fn claim_zone(file: &mut CharacterFile, area_id: &str) {
         return;
     };
     let Some(anchor) = anchor else {
-        file.progress.anchor_group = Some(file.route.groups[candidate].id.clone());
+        set_anchor(file, candidate);
         return;
     };
     if candidate <= anchor {
@@ -309,8 +312,21 @@ fn claim_zone(file: &mut CharacterFile, area_id: &str) {
     let earlier_shortcut =
         !earlier.is_empty() && earlier.iter().all(|index| shortcut_at(*index, file));
     if between_clear || earlier_shortcut || slots.first().copied() == Some(candidate) {
-        file.progress.anchor_group = Some(file.route.groups[candidate].id.clone());
+        set_anchor(file, candidate);
     }
+}
+
+fn set_anchor(file: &mut CharacterFile, index: usize) {
+    let id = file.route.groups[index].id.clone();
+    if file.progress.anchor_group.as_deref() == Some(id.as_str()) {
+        return;
+    }
+    if let Some(previous) = file.progress.anchor_group.clone() {
+        if !listed(&file.progress.visited_groups, &previous) {
+            file.progress.visited_groups.push(previous);
+        }
+    }
+    file.progress.anchor_group = Some(id);
 }
 
 pub fn event_visible(

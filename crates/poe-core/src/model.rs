@@ -389,6 +389,8 @@ pub struct CharacterProgress {
     #[serde(default)]
     pub anchor_group: Option<String>,
     #[serde(default)]
+    pub visited_groups: Vec<String>,
+    #[serde(default)]
     pub view_delta: i32,
 }
 

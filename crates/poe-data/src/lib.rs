@@ -347,6 +347,67 @@ mod tests {
     }
 
     #[test]
+    fn coast_after_submerged_passage_points_at_tidal_island() {
+        let catalog = load_catalog();
+        let mut file = poe_core::CharacterFile {
+            name: "Tester".into(),
+            class_name: "Duelist".into(),
+            route: build_route(&catalog, "Duelist", None, true),
+            progress: Default::default(),
+            user_edited: false,
+        };
+        for (name, id) in [
+            ("The Twilight Strand", "1_1_1"),
+            ("Lioneye's Watch", "1_1_town"),
+            ("The Coast", "1_1_2"),
+            ("The Mud Flats", "1_1_3"),
+            ("The Submerged Passage", "1_1_4_1"),
+        ] {
+            poe_core::apply_parsed(
+                &mut file,
+                &poe_core::ParsedLog::Entered {
+                    name: name.into(),
+                    area_id: Some(id.into()),
+                },
+                Some(1),
+            );
+        }
+        let shown = shown_text(&file);
+        assert!(shown.contains("Waypoint to The Coast"), "{shown}");
+        poe_core::apply_parsed(
+            &mut file,
+            &poe_core::ParsedLog::Entered {
+                name: "The Coast".into(),
+                area_id: Some("1_1_2".into()),
+            },
+            Some(1),
+        );
+        let shown = shown_text(&file);
+        assert!(shown.starts_with("The Coast"), "{shown}");
+        assert!(shown.contains("Enter The Tidal Island"), "{shown}");
+        assert!(
+            !file.progress.skipped_groups.iter().any(|id| id == "g1-8"),
+            "{:?}",
+            file.progress.skipped_groups
+        );
+        poe_core::apply_parsed(
+            &mut file,
+            &poe_core::ParsedLog::Entered {
+                name: "The Tidal Island".into(),
+                area_id: Some("1_1_2a".into()),
+            },
+            Some(1),
+        );
+        assert!(
+            !file.progress.skipped_groups.iter().any(|id| id == "g1-8"),
+            "{:?}",
+            file.progress.skipped_groups
+        );
+        let shown = shown_text(&file);
+        assert!(shown.contains("Hailrake"), "{shown}");
+    }
+
+    #[test]
     fn pob_bandit_selects_the_act_two_route() {
         let catalog = load_catalog();
         let kill = build_route(&catalog, "Ranger", None, false);
