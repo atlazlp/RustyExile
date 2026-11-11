@@ -45,22 +45,28 @@ Hand in {quest|a2q6} #Intruders in Black
 Find {quest_text|Altar}, take {quest_text|Golden Hand}
 {logout}
 Hand in {quest|a2q5} #Through Sacred Ground
-➞ {enter|1_2_7} #The Riverways
-    #sub Go {dir|225}
-Get {waypoint_get}
-    #sub Follow the road
-➞ {enter|1_2_9} #The Western Forest
-    #sub Follow the road
-Get {waypoint_get}
-    #sub Follow the road
-➞ {enter|1_2_10} #The Weaver's Chambers
-    #sub Search the side of road opposite {waypoint}
-➞ {arena|The Weaver's Nest}, kill {kill|The Weaver}, take {quest_text|Maligaro's Spike}
-    #sub Try go {dir|270}, if it's blocked go {dir|45}
-    #sub Recommended Level: 16
-{logout}
-Hand in {quest|a2q4} #Sharp and Cruel
 #ifdef BANDIT_KILL
+    ➞ {enter|1_2_7} #The Riverways
+        #sub Go {dir|225}
+    Get {waypoint_get}
+        #sub Follow the road
+    ➞ {enter|1_2_9} #The Western Forest
+        #sub Follow the road
+    Get {waypoint_get}
+        #sub Search opposite direction of the encampment entrance
+    Kill {kill|Alira Darktongue}, take {quest_text|Alira's Amulet}
+        #sub Go {dir|180} look for the torch touching the road
+        #sub Follow the trail in the direction of the torch
+    Kill {kill|Captain Arteri}
+        #sub Follow the road {dir|225}
+    Take {quest_text|Thaumetic Emblem}, activate {quest_text|Thaumetic Seal}
+    ➞ {enter|1_2_10} #The Weaver's Chambers
+        #sub Search the side of road opposite {waypoint}
+    ➞ {arena|The Weaver's Nest}, kill {kill|The Weaver}, take {quest_text|Maligaro's Spike}
+        #sub Try go {dir|270}, if it's blocked go {dir|45}
+        #sub Recommended Level: 16
+    {logout}
+    Hand in {quest|a2q4} #Sharp and Cruel
     {waypoint|1_2_3} #The Crossroads
     ➞ {enter|1_2_4} #The Broken Bridge
         #sub Go {dir|45}
@@ -71,14 +77,6 @@ Hand in {quest|a2q4} #Sharp and Cruel
     ➞ {enter|1_2_12} #The Wetlands
         #sub Look for 2 pillars near {waypoint}, follow the trail
     Find and kill {kill|Oak, Skullbreaker}, take {quest_text|Oak's Amulet}
-    {waypoint|1_2_9} #The Western Forest
-        #sub Search opposite direction of the encampment entrance
-    Kill {kill|Alira Darktongue}, take {quest_text|Alira's Amulet}
-        #sub Go {dir|180} look for the torch touching the road
-        #sub Follow the trail in the direction of the torch
-    Kill {kill|Captain Arteri}
-        #sub Follow the road {dir|225}
-    Take {quest_text|Thaumetic Emblem}, activate {quest_text|Thaumetic Seal}
     {logout}
     Hand in {quest|a2q7}, take {quest_text|The Apex} #Deal with the Bandits
     {waypoint|1_1_town} #Lioneye's Watch
@@ -93,11 +91,16 @@ Hand in {quest|a2q4} #Sharp and Cruel
     Kill {kill|Kraityn, Scarbearer}, take {quest_text|Kraityn's Amulet}
         #sub Follow the road
     {logout}
-    {waypoint|1_2_7} #The Riverways
+    ➞ {enter|1_2_7} #The Riverways
+        #sub Go {dir|225}
+    Get {waypoint_get}
     ➞ {enter|1_2_12} #The Wetlands
         #sub Look for 2 pillars near {waypoint}, follow the trail
     Find and kill {kill|Oak, Skullbreaker}, take {quest_text|Oak's Amulet}
-    {waypoint|1_2_9} #The Western Forest
+    {waypoint|1_2_7} #The Riverways
+    ➞ {enter|1_2_9} #The Western Forest
+        #sub Follow the road
+    Get {waypoint_get}
         #sub Search opposite direction of the encampment entrance
     Help {kill|Alira Darktongue}, take {quest_text|The Apex}
         #sub Go {dir|180} look for the torch touching the road
@@ -105,18 +108,26 @@ Hand in {quest|a2q4} #Sharp and Cruel
     Kill {kill|Captain Arteri}
         #sub Follow the road {dir|225}
     Take {quest_text|Thaumetic Emblem}, activate {quest_text|Thaumetic Seal}
+    ➞ {enter|1_2_10} #The Weaver's Chambers
+        #sub Search the side of road opposite {waypoint}
+    ➞ {arena|The Weaver's Nest}, kill {kill|The Weaver}, take {quest_text|Maligaro's Spike}
+        #sub Try go {dir|270}, if it's blocked go {dir|45}
+        #sub Recommended Level: 16
     {logout}
+    Hand in {quest|a2q4} #Sharp and Cruel
     {waypoint|1_1_town} #Lioneye's Watch
     Hand in {quest|a1q9} #The Way Forward
     {waypoint|1_2_12} #The Wetlands
     Poison the {quest_text|Tree Roots} ➞ {enter|1_2_11} #The Vaal Ruins
 #endif
 #ifdef BANDIT_KRAITYN
-    {waypoint|1_2_7} #The Riverways
-    ➞ {enter|1_2_12} #The Wetlands
-        #sub Look for 2 pillars near {waypoint}, follow the trail
-    Find and kill {kill|Oak, Skullbreaker}, take {quest_text|Oak's Amulet}
-    {waypoint|1_2_9} #The Western Forest
+    ➞ {enter|1_2_7} #The Riverways
+        #sub Go {dir|225}
+    Get {waypoint_get}
+        #sub Follow the road
+    ➞ {enter|1_2_9} #The Western Forest
+        #sub Follow the road
+    Get {waypoint_get}
         #sub Search opposite direction of the encampment entrance
     Kill {kill|Alira Darktongue}, take {quest_text|Alira's Amulet}
         #sub Go {dir|180} look for the torch touching the road
@@ -124,15 +135,26 @@ Hand in {quest|a2q4} #Sharp and Cruel
     Kill {kill|Captain Arteri}
         #sub Follow the road {dir|225}
     Take {quest_text|Thaumetic Emblem}, activate {quest_text|Thaumetic Seal}
+    ➞ {enter|1_2_10} #The Weaver's Chambers
+        #sub Search the side of road opposite {waypoint}
+    ➞ {arena|The Weaver's Nest}, kill {kill|The Weaver}, take {quest_text|Maligaro's Spike}
+        #sub Try go {dir|270}, if it's blocked go {dir|45}
+        #sub Recommended Level: 16
     {logout}
-    {waypoint|1_1_town} #Lioneye's Watch
-    Hand in {quest|a1q9} #The Way Forward
+    Hand in {quest|a2q4} #Sharp and Cruel
+    {waypoint|1_2_7} #The Riverways
+    ➞ {enter|1_2_12} #The Wetlands
+        #sub Look for 2 pillars near {waypoint}, follow the trail
+    Find and kill {kill|Oak, Skullbreaker}, take {quest_text|Oak's Amulet}
+    {logout}
     {waypoint|1_2_3} #The Crossroads
     ➞ {enter|1_2_4} #The Broken Bridge
         #sub Go {dir|45}
     Help {kill|Kraityn, Scarbearer}, take {quest_text|The Apex}
         #sub Follow the road
     {logout}
+    {waypoint|1_1_town} #Lioneye's Watch
+    Hand in {quest|a1q9} #The Way Forward
     {waypoint|1_2_12} #The Wetlands
     Poison the {quest_text|Tree Roots} ➞ {enter|1_2_11} #The Vaal Ruins
 #endif
@@ -143,14 +165,27 @@ Hand in {quest|a2q4} #Sharp and Cruel
     Kill {kill|Kraityn, Scarbearer}, take {quest_text|Kraityn's Amulet}
         #sub Follow the road
     {logout}
-    {waypoint|1_2_9} #The Western Forest
+    ➞ {enter|1_2_7} #The Riverways
+        #sub Go {dir|225}
+    Get {waypoint_get}
+        #sub Follow the road
+    ➞ {enter|1_2_9} #The Western Forest
+        #sub Follow the road
+    Get {waypoint_get}
+        #sub Search opposite direction of the encampment entrance
     Kill {kill|Alira Darktongue}, take {quest_text|Alira's Amulet}
         #sub Go {dir|180} look for the torch touching the road
         #sub Follow the trail in the direction of the torch
     Kill {kill|Captain Arteri}
         #sub Follow the road {dir|225}
     Take {quest_text|Thaumetic Emblem}, activate {quest_text|Thaumetic Seal}
+    ➞ {enter|1_2_10} #The Weaver's Chambers
+        #sub Search the side of road opposite {waypoint}
+    ➞ {arena|The Weaver's Nest}, kill {kill|The Weaver}, take {quest_text|Maligaro's Spike}
+        #sub Try go {dir|270}, if it's blocked go {dir|45}
+        #sub Recommended Level: 16
     {logout}
+    Hand in {quest|a2q4} #Sharp and Cruel
     {waypoint|1_1_town} #Lioneye's Watch
     Hand in {quest|a1q9} #The Way Forward
     {waypoint|1_2_7} #The Riverways

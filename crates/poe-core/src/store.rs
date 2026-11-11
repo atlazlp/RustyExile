@@ -48,7 +48,9 @@ pub fn save_catalog(catalog: &Catalog) -> anyhow::Result<()> {
 }
 
 pub fn character_path(name: &str) -> PathBuf {
-    root_dir().join("characters").join(format!("{}.json", safe_name(name)))
+    root_dir()
+        .join("characters")
+        .join(format!("{}.json", safe_name(name)))
 }
 
 pub fn load_character(name: &str) -> Option<CharacterFile> {
@@ -97,7 +99,10 @@ pub fn load_regex_presets(defaults: Vec<RegexPreset>) -> Vec<RegexPreset> {
 pub fn save_regex_presets(presets: &[RegexPreset]) -> anyhow::Result<()> {
     let dir = root_dir();
     fs::create_dir_all(&dir).context("create data dir")?;
-    fs::write(dir.join("regex.json"), serde_json::to_string_pretty(presets)?)?;
+    fs::write(
+        dir.join("regex.json"),
+        serde_json::to_string_pretty(presets)?,
+    )?;
     Ok(())
 }
 

@@ -78,7 +78,9 @@ pub fn reconcile_landmarks(saved: &[Landmark]) -> Vec<Landmark> {
 pub fn visible_landmarks(landmarks: &[Landmark], progress: &CharacterProgress) -> Vec<VisibleLine> {
     landmarks
         .iter()
-        .filter(|landmark| landmark.enabled && landmark.area_ids.iter().any(|id| id == &progress.area_id))
+        .filter(|landmark| {
+            landmark.enabled && landmark.area_ids.iter().any(|id| id == &progress.area_id)
+        })
         .map(|landmark| VisibleLine {
             event_id: landmark.id.clone(),
             group_name: None,
@@ -106,7 +108,12 @@ mod tests {
             .collect();
         assert_eq!(
             on,
-            vec!["flooded-depths", "upper-prison-chemist", "karui-tattoos", "ossuary-lens"]
+            vec![
+                "flooded-depths",
+                "upper-prison-chemist",
+                "karui-tattoos",
+                "ossuary-lens"
+            ]
         );
     }
 
@@ -134,7 +141,10 @@ mod tests {
         saved[2].enabled = false;
         saved[2].area_ids = vec!["nope".into()];
         let merged = reconcile_landmarks(&saved);
-        let prison = merged.iter().find(|landmark| landmark.id == "upper-prison-chemist").unwrap();
+        let prison = merged
+            .iter()
+            .find(|landmark| landmark.id == "upper-prison-chemist")
+            .unwrap();
         assert_eq!(prison.text, "Custom flask hint");
         assert!(!prison.enabled);
         assert_eq!(prison.area_ids, vec!["1_1_7_2"]);

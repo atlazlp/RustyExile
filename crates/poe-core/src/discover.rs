@@ -107,7 +107,10 @@ fn guess_install(exe: &str, cmd: &str) -> Option<PathBuf> {
             }
         }
     }
-    for marker in ["steamapps/common/Path of Exile", "Grinding Gear Games/Path of Exile"] {
+    for marker in [
+        "steamapps/common/Path of Exile",
+        "Grinding Gear Games/Path of Exile",
+    ] {
         if let Some(idx) = cmd.find(marker).or_else(|| exe.find(marker)) {
             let start = cmd.get(idx..).or_else(|| exe.get(idx..))?;
             let end = start.find(".exe").map(|e| e).unwrap_or(start.len());
@@ -150,9 +153,9 @@ fn resolve_log(install_dir: &Path, environ: &[(String, String)], kind: InstallKi
     }
     if kind == InstallKind::Steam {
         if let Some(home) = directories::UserDirs::new() {
-            let steam = home.home_dir().join(
-                ".local/share/Steam/steamapps/common/Path of Exile/logs/Client.txt",
-            );
+            let steam = home
+                .home_dir()
+                .join(".local/share/Steam/steamapps/common/Path of Exile/logs/Client.txt");
             if steam.is_file() {
                 return steam;
             }
@@ -203,7 +206,12 @@ pub fn launch_game(install: Option<&SavedInstall>) -> anyhow::Result<()> {
 }
 
 fn standalone_exe(dir: &Path) -> Option<PathBuf> {
-    for name in ["PathOfExile_x64.exe", "PathOfExile.exe", "PathOfExile_x64Steam.exe", "PathOfExileSteam.exe"] {
+    for name in [
+        "PathOfExile_x64.exe",
+        "PathOfExile.exe",
+        "PathOfExile_x64Steam.exe",
+        "PathOfExileSteam.exe",
+    ] {
         let path = dir.join(name);
         if path.is_file() {
             return Some(path);
@@ -311,9 +319,8 @@ fn detach_argv_with(launcher: &str, program: &str, args: &[&str]) -> Vec<String>
 }
 
 fn which_exists(name: &str) -> bool {
-    std::env::var_os("PATH").is_some_and(|path| {
-        std::env::split_paths(&path).any(|dir| dir.join(name).is_file())
-    })
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(name).is_file()))
 }
 
 #[cfg(unix)]
@@ -346,7 +353,9 @@ mod tests {
             "/games/Path of Exile/PathOfExile_x64Steam.exe"
         ));
         assert_eq!(
-            classify_exe("C:/Program Files/steamapps/common/Path of Exile/PathOfExile_x64Steam.exe"),
+            classify_exe(
+                "C:/Program Files/steamapps/common/Path of Exile/PathOfExile_x64Steam.exe"
+            ),
             InstallKind::Steam
         );
         assert_eq!(
@@ -365,7 +374,10 @@ mod tests {
     fn proton_argv_outranks_a_launcher_that_only_mentions_the_game() {
         let wine = r"S:\steamapps\common\Path of Exile\PathOfExileSteam.exe --nopatch";
         let launcher = "reaper SteamLaunch -- PathOfExileSteam.exe --nopatch";
-        assert_eq!(attachment_rank("wine64-preloader", Some(wine), wine), Some(1));
+        assert_eq!(
+            attachment_rank("wine64-preloader", Some(wine), wine),
+            Some(1)
+        );
         assert_eq!(
             attachment_rank("/usr/bin/reaper", Some("reaper"), launcher),
             Some(0)
@@ -377,9 +389,15 @@ mod tests {
     fn game_launch_is_not_a_child_of_the_overlay_unit() {
         let argv = detach_argv_with("uwsm", "steam", &["steam://rungameid/238960"]);
         assert_eq!(argv[0], "uwsm");
-        assert_eq!(&argv[argv.len() - 2..], ["steam", "steam://rungameid/238960"]);
+        assert_eq!(
+            &argv[argv.len() - 2..],
+            ["steam", "steam://rungameid/238960"]
+        );
         let systemd = detach_argv_with("systemd-run", "steam", &["steam://rungameid/238960"]);
         assert!(systemd.iter().any(|arg| arg == "--slice=app.slice"));
-        assert_eq!(systemd.last().map(String::as_str), Some("steam://rungameid/238960"));
+        assert_eq!(
+            systemd.last().map(String::as_str),
+            Some("steam://rungameid/238960")
+        );
     }
 }

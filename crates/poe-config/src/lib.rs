@@ -1,8 +1,9 @@
 use eframe::egui::{self, Color32, RichText, TextureHandle, TextureOptions};
 use poe_core::{
-    build_route, fetch_pob, install_build, parse_markup, tone_rgb, vendor_gem_regex, visible_lines, AppState,
-    CampaignEvent, CharacterFile, ChatCommand, EventGroup, EventKind, Experience, Hotkeys, HudCorner, TextTone,
-    TriggerKind, UpdateOutcome, VERSION,
+    build_route, fetch_pob, install_build, parse_markup, tone_rgb, update_needs_permission,
+    vendor_gem_regex, visible_lines, AppState, CampaignEvent, CharacterFile, ChatCommand,
+    EventGroup, EventKind, Experience, Hotkeys, HudCorner, TextTone, TriggerKind, UpdateOutcome,
+    VERSION,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -135,7 +136,9 @@ impl Tab {
             Self::Builds => "Characters, and gems imported from a Path of Building link.",
             Self::Database => "The shared catalog copied into each new character.",
             Self::Regex => "Vendor search strings for the gems still on screen.",
-            Self::Landmarks => "Optional campaign secrets. The hint shows while you are in that zone.",
+            Self::Landmarks => {
+                "Optional campaign secrets. The hint shows while you are in that zone."
+            }
         }
     }
 }
@@ -143,7 +146,10 @@ impl Tab {
 impl UiApp {
     fn new(cc: &eframe::CreationContext<'_>, state: Arc<Mutex<AppState>>) -> Self {
         apply_style(&cc.egui_ctx);
-        let start_update = state.lock().map(|state| state.settings.auto_update).unwrap_or(true);
+        let start_update = state
+            .lock()
+            .map(|state| state.settings.auto_update)
+            .unwrap_or(true);
         Self {
             state,
             icons: HashMap::new(),
@@ -183,7 +189,8 @@ impl UiApp {
             ui.image((tex.id(), egui::vec2(size, size)));
         } else {
             let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
-            ui.painter().circle_filled(rect.center(), size * 0.35, Color32::from_rgb(180, 140, 60));
+            ui.painter()
+                .circle_filled(rect.center(), size * 0.35, Color32::from_rgb(180, 140, 60));
         }
     }
 }
@@ -207,11 +214,17 @@ impl eframe::App for UiApp {
             self.update_rx = None;
             self.finish_update(outcome);
         }
-        let chosen = self.state.lock().map(|s| s.settings.experience_chosen).unwrap_or(false);
+        let chosen = self
+            .state
+            .lock()
+            .map(|s| s.settings.experience_chosen)
+            .unwrap_or(false);
         let show = self.state.lock().map(|s| s.show_config).unwrap_or(false);
         if show {
             if let Some((x, y)) = poe_overlay::config_popup_origin() {
-                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x as f32, y as f32)));
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(
+                    x as f32, y as f32,
+                )));
             }
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             #[cfg(windows)]
@@ -244,13 +257,19 @@ impl eframe::App for UiApp {
             .resizable(false)
             .frame(sidebar_frame())
             .show(ctx, |ui| self.nav(ui));
-        egui::CentralPanel::default().frame(page_frame()).show(ctx, |ui| self.page(ui));
+        egui::CentralPanel::default()
+            .frame(page_frame())
+            .show(ctx, |ui| self.page(ui));
     }
 }
 
 impl UiApp {
     fn nav(&mut self, ui: &mut egui::Ui) {
-        let auto_update = self.state.lock().map(|state| state.settings.auto_update).unwrap_or(true);
+        let auto_update = self
+            .state
+            .lock()
+            .map(|state| state.settings.auto_update)
+            .unwrap_or(true);
         let mut footer = 150.0;
         if !self.launch_note.is_empty() {
             footer += 22.0;
@@ -263,7 +282,12 @@ impl UiApp {
         }
         let list_h = (ui.available_height() - footer).max(120.0);
         egui::Frame::NONE
-            .inner_margin(egui::Margin { left: 10, right: 0, top: 0, bottom: 0 })
+            .inner_margin(egui::Margin {
+                left: 10,
+                right: 0,
+                top: 0,
+                bottom: 0,
+            })
             .show(ui, |ui| {
                 egui::ScrollArea::vertical()
                     .id_salt("nav")
@@ -283,12 +307,19 @@ impl UiApp {
                 if !auto_update {
                     ui.add_space(8.0);
                     let width = ui.available_width();
-                    if ui.add_sized([width, 36.0], egui::Button::new("Check for updates")).clicked() {
+                    if ui
+                        .add_sized([width, 36.0], egui::Button::new("Check for updates"))
+                        .clicked()
+                    {
                         self.check_updates(true);
                     }
                 }
             });
-        ui.label(RichText::new(format!("v{VERSION}")).size(11.0).color(muted()));
+        ui.label(
+            RichText::new(format!("v{VERSION}"))
+                .size(11.0)
+                .color(muted()),
+        );
     }
 
     fn action_buttons(&mut self, ui: &mut egui::Ui, stacked: bool) {
@@ -300,7 +331,10 @@ impl UiApp {
         if stacked {
             ui.add_space(8.0);
         }
-        if ui.add_sized([width, 36.0], egui::Button::new("Exit Overlay")).clicked() {
+        if ui
+            .add_sized([width, 36.0], egui::Button::new("Exit Overlay"))
+            .clicked()
+        {
             self.exit_overlay();
         }
         if !self.launch_note.is_empty() {
@@ -384,7 +418,11 @@ impl UiApp {
                 };
             }
             UpdateOutcome::Installed { version } => {
-                self.update_note = format!("Updating to {version}.");
+                self.update_note = if update_needs_permission() {
+                    format!("Windows needs permission to update to {version}.")
+                } else {
+                    format!("Updating to {version}.")
+                };
                 self.persist();
                 if let Err(err) = poe_core::restart_installed() {
                     self.update_note = format!("Could not restart. {err}");
@@ -397,7 +435,11 @@ impl UiApp {
     }
 
     fn open_poe(&mut self) {
-        let install = self.state.lock().ok().and_then(|state| state.settings.install.clone());
+        let install = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.settings.install.clone());
         let (tx, rx) = std::sync::mpsc::channel();
         self.launch_rx = Some(rx);
         self.launch_note = "Opening Path of Exile.".into();
@@ -416,7 +458,8 @@ impl UiApp {
     fn nav_button(&mut self, ui: &mut egui::Ui, tab: Tab) {
         let selected = self.tab == tab;
         let width = ui.available_width();
-        let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 52.0), egui::Sense::click());
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(width, 52.0), egui::Sense::click());
         let fill = if selected {
             accent_soft()
         } else if response.hovered() {
@@ -425,14 +468,22 @@ impl UiApp {
             Color32::TRANSPARENT
         };
         if fill != Color32::TRANSPARENT {
-            ui.painter().rect_filled(rect, egui::CornerRadius::same(10), fill);
+            ui.painter()
+                .rect_filled(rect, egui::CornerRadius::same(10), fill);
         }
         if selected {
-            let bar = egui::Rect::from_min_size(rect.min + egui::vec2(0.0, 10.0), egui::vec2(3.0, rect.height() - 20.0));
-            ui.painter().rect_filled(bar, egui::CornerRadius::same(2), accent());
+            let bar = egui::Rect::from_min_size(
+                rect.min + egui::vec2(0.0, 10.0),
+                egui::vec2(3.0, rect.height() - 20.0),
+            );
+            ui.painter()
+                .rect_filled(bar, egui::CornerRadius::same(2), accent());
         }
         if let Some(tex) = self.icon(tab.icon()) {
-            let icon_rect = egui::Rect::from_min_size(rect.left_center() + egui::vec2(16.0, -12.0), egui::vec2(24.0, 24.0));
+            let icon_rect = egui::Rect::from_min_size(
+                rect.left_center() + egui::vec2(16.0, -12.0),
+                egui::vec2(24.0, 24.0),
+            );
             ui.painter().image(
                 tex.id(),
                 icon_rect,
@@ -440,7 +491,11 @@ impl UiApp {
                 Color32::WHITE,
             );
         }
-        let color = if selected { ink() } else { Color32::from_rgb(196, 190, 176) };
+        let color = if selected {
+            ink()
+        } else {
+            Color32::from_rgb(196, 190, 176)
+        };
         ui.painter().text(
             rect.left_center() + egui::vec2(52.0, 0.0),
             egui::Align2::LEFT_CENTER,
@@ -463,7 +518,11 @@ impl UiApp {
             |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 ui.vertical(|ui| {
-                    let text_width = if cfg!(windows) { width } else { (width - 44.0).max(80.0) };
+                    let text_width = if cfg!(windows) {
+                        width
+                    } else {
+                        (width - 44.0).max(80.0)
+                    };
                     ui.set_width(text_width);
                     ui.label(RichText::new(title).size(30.0).strong().color(ink()));
                     ui.add_space(4.0);
@@ -471,7 +530,9 @@ impl UiApp {
                 });
                 #[cfg(not(windows))]
                 {
-                    let close = egui::Button::new(RichText::new("X").size(20.0).strong().color(ink())).frame(false);
+                    let close =
+                        egui::Button::new(RichText::new("X").size(20.0).strong().color(ink()))
+                            .frame(false);
                     if ui.add_sized([36.0, 36.0], close).clicked() {
                         self.close_config();
                     }
@@ -492,54 +553,74 @@ impl UiApp {
                     .auto_shrink([false, false])
                     .id_salt("page")
                     .show(ui, |ui| match self.tab {
-                    Tab::General => self.general(ui),
-                    Tab::Hotkeys => self.hotkeys(ui),
-                    Tab::Builds => self.builds(ui),
-                    Tab::Regex => self.regex_tab(ui),
-                    Tab::Landmarks => self.landmarks(ui),
-                    _ => {}
-                });
+                        Tab::General => self.general(ui),
+                        Tab::Hotkeys => self.hotkeys(ui),
+                        Tab::Builds => self.builds(ui),
+                        Tab::Regex => self.regex_tab(ui),
+                        Tab::Landmarks => self.landmarks(ui),
+                        _ => {}
+                    });
             }
         }
     }
 
     fn wizard(&mut self, ctx: &egui::Context) {
-        egui::CentralPanel::default().frame(page_frame()).show(ctx, |ui| {
-            ui.add_space(12.0);
-            self.page_heading(
-                ui,
-                "How should the overlay start?",
-                "This only sets the first-run defaults. Every option can be changed later.",
-            );
-            ui.add_space(20.0);
-            ui.horizontal_wrapped(|ui| self.action_buttons(ui, false));
-            ui.add_space(20.0);
-            let experiences = [Experience::Beginner, Experience::Intermediate, Experience::Advanced];
-            fit_columns(ui, &[1.0, 1.0, 1.0], 16.0, None, |ui, _width, index| {
-                let experience = experiences[index];
-                card().show(ui, |ui| {
+        egui::CentralPanel::default()
+            .frame(page_frame())
+            .show(ctx, |ui| {
+                ui.add_space(12.0);
+                self.page_heading(
+                    ui,
+                    "How should the overlay start?",
+                    "This only sets the first-run defaults. Every option can be changed later.",
+                );
+                ui.add_space(20.0);
+                ui.horizontal_wrapped(|ui| self.action_buttons(ui, false));
+                ui.add_space(20.0);
+                let experiences = [
+                    Experience::Beginner,
+                    Experience::Intermediate,
+                    Experience::Advanced,
+                ];
+                fit_columns(ui, &[1.0, 1.0, 1.0], 16.0, None, |ui, _width, index| {
+                    let experience = experiences[index];
+                    card().show(ui, |ui| {
                         ui.set_min_height(240.0);
-                        ui.label(RichText::new(experience.label()).size(22.0).strong().color(ink()));
+                        ui.label(
+                            RichText::new(experience.label())
+                                .size(22.0)
+                                .strong()
+                                .color(ink()),
+                        );
                         ui.add_space(12.0);
                         ui.label(RichText::new(experience.explanation()).color(muted()));
                         ui.add_space(20.0);
                         let button = egui::Button::new(format!("Start as {}", experience.label()));
-                        if ui.add_sized(egui::vec2(ui.available_width(), 38.0), button).clicked() {
+                        if ui
+                            .add_sized(egui::vec2(ui.available_width(), 38.0), button)
+                            .clicked()
+                        {
                             if let Ok(mut state) = self.state.lock() {
                                 state.settings.apply_experience(experience);
                                 state.dirty_settings = true;
                             }
                         }
+                    });
                 });
             });
-        });
     }
 
     fn general(&mut self, ui: &mut egui::Ui) {
-        let Ok(mut state) = self.state.lock() else { return };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         let mut schedule_update = false;
         section(ui, "Profile");
-        let experiences = [Experience::Beginner, Experience::Intermediate, Experience::Advanced];
+        let experiences = [
+            Experience::Beginner,
+            Experience::Intermediate,
+            Experience::Advanced,
+        ];
         fit_columns(ui, &[1.0, 1.0, 1.0], 16.0, None, |ui, _width, index| {
             let experience = experiences[index];
             let selected = state.settings.experience == experience;
@@ -568,27 +649,37 @@ impl UiApp {
         });
 
         section(ui, "Overlay");
-        fit_columns(ui, &[1.0, 1.0, 1.0], 16.0, None, |ui, _width, index| match index {
-            0 => option_card(ui, "Campaign", |ui| {
-                let tips = toggle(ui, &mut state.settings.tips, "Zone tips");
-                let acts = toggle(ui, &mut state.settings.acts, "Act list");
-                let gems = toggle(ui, &mut state.settings.gems, "Gem list");
-                let league = toggle(ui, &mut state.settings.league_start, "League-start route");
-                mark(&mut state.dirty_settings, tips || acts || gems || league);
-            }),
-            1 => option_card(ui, "Window", |ui| {
-                let landmarks = toggle(ui, &mut state.settings.show_landmarks, "Landmarks");
-                let hud = toggle(ui, &mut state.hud_enabled, "Show while the game is focused");
-                let config_button = toggle(ui, &mut state.settings.show_config_button, "Config button at the top of the game");
-                mark(&mut state.dirty_settings, landmarks || hud || config_button);
-            }),
-            _ => option_card(ui, "Updates", |ui| {
-                let was_auto = state.settings.auto_update;
-                let changed = toggle(ui, &mut state.settings.auto_update, "Automatic updates");
-                mark(&mut state.dirty_settings, changed);
-                schedule_update = changed && state.settings.auto_update && !was_auto;
-            }),
-        });
+        fit_columns(
+            ui,
+            &[1.0, 1.0, 1.0],
+            16.0,
+            None,
+            |ui, _width, index| match index {
+                0 => option_card(ui, "Campaign", |ui| {
+                    let tips = toggle(ui, &mut state.settings.tips, "Zone tips");
+                    let acts = toggle(ui, &mut state.settings.acts, "Act list");
+                    let gems = toggle(ui, &mut state.settings.gems, "Gem list");
+                    let league = toggle(ui, &mut state.settings.league_start, "League-start route");
+                    mark(&mut state.dirty_settings, tips || acts || gems || league);
+                }),
+                1 => option_card(ui, "Window", |ui| {
+                    let landmarks = toggle(ui, &mut state.settings.show_landmarks, "Landmarks");
+                    let hud = toggle(ui, &mut state.hud_enabled, "Show while the game is focused");
+                    let config_button = toggle(
+                        ui,
+                        &mut state.settings.show_config_button,
+                        "Config button at the top of the game",
+                    );
+                    mark(&mut state.dirty_settings, landmarks || hud || config_button);
+                }),
+                _ => option_card(ui, "Updates", |ui| {
+                    let was_auto = state.settings.auto_update;
+                    let changed = toggle(ui, &mut state.settings.auto_update, "Automatic updates");
+                    mark(&mut state.dirty_settings, changed);
+                    schedule_update = changed && state.settings.auto_update && !was_auto;
+                }),
+            },
+        );
 
         fit_columns(ui, &[1.65, 0.75], 16.0, None, |ui, _width, index| {
             if index == 0 {
@@ -610,13 +701,22 @@ impl UiApp {
                     ui.add_space(8.0);
                     labeled(ui, inner, "Corner", |ui, _| {
                         corner_pair(ui, &mut state, [HudCorner::TopLeft, HudCorner::TopRight]);
-                        corner_pair(ui, &mut state, [HudCorner::BottomLeft, HudCorner::BottomRight]);
-                        let custom_on = state.hud_placing || state.settings.corner == HudCorner::Custom;
+                        corner_pair(
+                            ui,
+                            &mut state,
+                            [HudCorner::BottomLeft, HudCorner::BottomRight],
+                        );
+                        let custom_on =
+                            state.hud_placing || state.settings.corner == HudCorner::Custom;
                         if ui.selectable_label(custom_on, "Custom").clicked() {
                             state.hud_placing = true;
                         }
                         if state.hud_placing {
-                            ui.label(RichText::new("Drag the events window, then click Confirm.").size(12.0).color(muted()));
+                            ui.label(
+                                RichText::new("Drag the events window, then click Confirm.")
+                                    .size(12.0)
+                                    .color(muted()),
+                            );
                         }
                     });
                     ui.add_space(8.0);
@@ -675,7 +775,12 @@ impl UiApp {
     }
 
     fn hotkeys(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Ctrl+Alt+click on a task clears it even if its end zone has not been entered.").color(muted()));
+        ui.label(
+            RichText::new(
+                "Ctrl+Alt+click on a task clears it even if its end zone has not been entered.",
+            )
+            .color(muted()),
+        );
         ui.add_space(12.0);
         card().show(ui, |ui| {
             egui::Grid::new("hotkeys")
@@ -692,6 +797,8 @@ impl UiApp {
                     self.hotkey_row(ui, "Paste vendor regex", "paste_regex");
                     self.hotkey_row(ui, "Previous events", "events_back");
                     self.hotkey_row(ui, "Next events", "events_forward");
+                    self.hotkey_row(ui, "Previous group", "group_back");
+                    self.hotkey_row(ui, "Next group", "group_forward");
                     self.hotkey_row(ui, "Clear-task modifiers", "clear_modifiers");
                 });
         });
@@ -699,16 +806,33 @@ impl UiApp {
         if self.capture.is_some() {
             ui.add_space(12.0);
             card().show(ui, |ui| {
-                ui.label(RichText::new("Press the new chord. Escape cancels.").color(accent()).size(15.0));
+                ui.label(
+                    RichText::new("Press the new chord. Escape cancels.")
+                        .color(accent())
+                        .size(15.0),
+                );
             });
         }
     }
 
     fn hotkey_row(&mut self, ui: &mut egui::Ui, label: &str, field: &'static str) {
-        let current = self.state.lock().ok().map(|s| builtin_hotkey(&s.settings.hotkeys, field)).unwrap_or_default();
+        let current = self
+            .state
+            .lock()
+            .ok()
+            .map(|s| builtin_hotkey(&s.settings.hotkeys, field))
+            .unwrap_or_default();
         ui.label(RichText::new(label).size(15.0));
-        ui.label(RichText::new(current).monospace().size(15.0).color(accent()));
-        if ui.add_sized([108.0, 32.0], egui::Button::new("Change")).clicked() {
+        ui.label(
+            RichText::new(current)
+                .monospace()
+                .size(15.0)
+                .color(accent()),
+        );
+        if ui
+            .add_sized([108.0, 32.0], egui::Button::new("Change"))
+            .clicked()
+        {
             self.begin_capture(Capture::Builtin(field));
         }
         ui.end_row();
@@ -718,7 +842,12 @@ impl UiApp {
         section(ui, "Chat commands");
         ui.label(RichText::new("A hotkey opens chat in Path of Exile and sends the text. /hideout takes you to your hideout.").color(muted()));
         ui.add_space(8.0);
-        let mut commands = self.state.lock().ok().map(|s| s.settings.hotkeys.chat.clone()).unwrap_or_default();
+        let mut commands = self
+            .state
+            .lock()
+            .ok()
+            .map(|s| s.settings.hotkeys.chat.clone())
+            .unwrap_or_default();
         let mut changed = false;
         let mut delete = None;
         let mut capture_id = None;
@@ -729,37 +858,57 @@ impl UiApp {
             let end = (start + cols).min(commands.len());
             tile_row(ui, full, |ui| {
                 for command in &mut commands[start..end] {
-                    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                        card().show(ui, |ui| {
-                            changed |= wide_edit(ui, ui.available_width(), &mut command.label).changed();
-                            ui.add_space(8.0);
-                            changed |= wide_edit(ui, ui.available_width(), &mut command.text).changed();
-                            ui.add_space(8.0);
-                            ui.horizontal(|ui| {
-                                if ui.add_sized([88.0, 36.0], egui::Button::new("Paste")).clicked() {
-                                    if let Some(text) = clipboard_text() {
-                                        command.text = text;
-                                        changed = true;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            card().show(ui, |ui| {
+                                changed |= wide_edit(ui, ui.available_width(), &mut command.label)
+                                    .changed();
+                                ui.add_space(8.0);
+                                changed |= wide_edit(ui, ui.available_width(), &mut command.text)
+                                    .changed();
+                                ui.add_space(8.0);
+                                ui.horizontal(|ui| {
+                                    if ui
+                                        .add_sized([88.0, 36.0], egui::Button::new("Paste"))
+                                        .clicked()
+                                    {
+                                        if let Some(text) = clipboard_text() {
+                                            command.text = text;
+                                            changed = true;
+                                        }
                                     }
-                                }
-                                if ui.add_sized([88.0, 36.0], egui::Button::new("Delete")).clicked() {
-                                    delete = Some(command.id.clone());
-                                }
+                                    if ui
+                                        .add_sized([88.0, 36.0], egui::Button::new("Delete"))
+                                        .clicked()
+                                    {
+                                        delete = Some(command.id.clone());
+                                    }
+                                });
+                                ui.add_space(8.0);
+                                ui.horizontal(|ui| {
+                                    let hotkey = if command.hotkey.is_empty() {
+                                        "No hotkey".to_string()
+                                    } else {
+                                        command.hotkey.clone()
+                                    };
+                                    ui.label(
+                                        RichText::new(hotkey)
+                                            .monospace()
+                                            .size(15.0)
+                                            .color(accent()),
+                                    );
+                                    if ui
+                                        .add_sized([120.0, 36.0], egui::Button::new("Set hotkey"))
+                                        .clicked()
+                                    {
+                                        capture_id = Some(command.id.clone());
+                                    }
+                                });
                             });
-                            ui.add_space(8.0);
-                            ui.horizontal(|ui| {
-                                let hotkey = if command.hotkey.is_empty() {
-                                    "No hotkey".to_string()
-                                } else {
-                                    command.hotkey.clone()
-                                };
-                                ui.label(RichText::new(hotkey).monospace().size(15.0).color(accent()));
-                                if ui.add_sized([120.0, 36.0], egui::Button::new("Set hotkey")).clicked() {
-                                    capture_id = Some(command.id.clone());
-                                }
-                            });
-                        });
-                    });
+                        },
+                    );
                 }
             });
             start = end;
@@ -799,18 +948,32 @@ impl UiApp {
     }
 
     fn capture_hotkey(&mut self, ctx: &egui::Context) {
-        let Some(field) = self.capture.clone() else { return };
+        let Some(field) = self.capture.clone() else {
+            return;
+        };
         let mut pressed = None;
         ctx.input(|input| {
             for event in &input.events {
-                if let egui::Event::Key { key, pressed: true, modifiers, .. } = event {
+                if let egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } = event
+                {
                     if *key == egui::Key::Escape {
                         pressed = Some(String::new());
                     } else {
                         let mut parts = Vec::new();
-                        if modifiers.ctrl { parts.push("ctrl".to_string()); }
-                        if modifiers.alt { parts.push("alt".to_string()); }
-                        if modifiers.shift { parts.push("shift".to_string()); }
+                        if modifiers.ctrl {
+                            parts.push("ctrl".to_string());
+                        }
+                        if modifiers.alt {
+                            parts.push("alt".to_string());
+                        }
+                        if modifiers.shift {
+                            parts.push("shift".to_string());
+                        }
                         parts.push(format!("{key:?}").to_ascii_lowercase());
                         pressed = Some(parts.join("+"));
                     }
@@ -824,9 +987,17 @@ impl UiApp {
             }
             if let Ok(mut state) = self.state.lock() {
                 match field {
-                    Capture::Builtin(name) => set_builtin_hotkey(&mut state.settings.hotkeys, name, chord),
+                    Capture::Builtin(name) => {
+                        set_builtin_hotkey(&mut state.settings.hotkeys, name, chord)
+                    }
                     Capture::Chat(id) => {
-                        if let Some(cmd) = state.settings.hotkeys.chat.iter_mut().find(|cmd| cmd.id == id) {
+                        if let Some(cmd) = state
+                            .settings
+                            .hotkeys
+                            .chat
+                            .iter_mut()
+                            .find(|cmd| cmd.id == id)
+                        {
                             cmd.hotkey = chord;
                         }
                     }
@@ -837,7 +1008,11 @@ impl UiApp {
     }
 
     fn events(&mut self, ui: &mut egui::Ui, gems: bool) {
-        let snapshot = self.state.lock().ok().and_then(|s| s.active_character().cloned());
+        let snapshot = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|s| s.active_character().cloned());
         let Some(character) = snapshot else {
             ui.label("Add a character on the Builds tab. The act list is saved separately for each character.");
             return;
@@ -984,25 +1159,30 @@ impl UiApp {
     }
 
     fn groups(&mut self, ui: &mut egui::Ui, gems: bool) {
-        let groups = self.state.lock().ok().and_then(|state| {
-            state.active_character().map(|character| {
-                character
-                    .route
-                    .groups
-                    .iter()
-                    .filter(|group| {
-                        group.event_ids.iter().any(|id| {
-                            character
-                                .route
-                                .events
-                                .iter()
-                                .any(|event| event.id == *id && event.kind.is_gem() == gems)
+        let groups = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state.active_character().map(|character| {
+                    character
+                        .route
+                        .groups
+                        .iter()
+                        .filter(|group| {
+                            group.event_ids.iter().any(|id| {
+                                character
+                                    .route
+                                    .events
+                                    .iter()
+                                    .any(|event| event.id == *id && event.kind.is_gem() == gems)
+                            })
                         })
-                    })
-                    .map(|group| (group.id.clone(), group.name.clone(), group.start.clone()))
-                    .collect::<Vec<_>>()
+                        .map(|group| (group.id.clone(), group.name.clone(), group.start.clone()))
+                        .collect::<Vec<_>>()
+                })
             })
-        }).unwrap_or_default();
+            .unwrap_or_default();
         if groups.is_empty() {
             return;
         }
@@ -1028,9 +1208,16 @@ impl UiApp {
     }
 
     fn edit_group(&self, id: &str, change: impl FnOnce(&mut EventGroup)) {
-        let Ok(mut state) = self.state.lock() else { return };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         if let Some(character) = state.active_character_mut() {
-            if let Some(group) = character.route.groups.iter_mut().find(|group| group.id == id) {
+            if let Some(group) = character
+                .route
+                .groups
+                .iter_mut()
+                .find(|group| group.id == id)
+            {
                 change(group);
                 character.user_edited = true;
             }
@@ -1047,13 +1234,19 @@ impl UiApp {
         let mut changed = false;
         ui.label("Text");
         changed |= ui
-            .add_sized([width, 36.0], line_edit(&mut text).desired_width(width).clip_text(true))
+            .add_sized(
+                [width, 36.0],
+                line_edit(&mut text).desired_width(width).clip_text(true),
+            )
             .on_hover_text("{loc} location    {item} quest item    {red} {green} {blue} gems")
             .changed();
         ui.add_space(8.0);
         ui.label("Tip");
         changed |= ui
-            .add_sized([width, 36.0], line_edit(&mut detail).desired_width(width).clip_text(true))
+            .add_sized(
+                [width, 36.0],
+                line_edit(&mut detail).desired_width(width).clip_text(true),
+            )
             .changed();
         ui.add_space(8.0);
         ui.label("Start triggers");
@@ -1065,7 +1258,9 @@ impl UiApp {
         if changed {
             if let Ok(mut state) = self.state.lock() {
                 if let Some(character) = state.active_character_mut() {
-                    if let Some(found) = character.route.events.iter_mut().find(|e| e.id == event.id) {
+                    if let Some(found) =
+                        character.route.events.iter_mut().find(|e| e.id == event.id)
+                    {
                         found.text = text;
                         found.detail = detail;
                         found.start = start;
@@ -1079,7 +1274,11 @@ impl UiApp {
     }
 
     fn skipped_events(&mut self, ui: &mut egui::Ui) {
-        let snapshot = self.state.lock().ok().and_then(|state| state.active_character().cloned());
+        let snapshot = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| state.active_character().cloned());
         let Some(character) = snapshot else {
             ui.label(RichText::new("Select a character first.").color(muted()));
             return;
@@ -1094,7 +1293,11 @@ impl UiApp {
                 continue;
             };
             card().show(ui, |ui| {
-                ui.label(RichText::new(format!("Act {}  {}", group.act, group.name)).strong().color(accent()));
+                ui.label(
+                    RichText::new(format!("Act {}  {}", group.act, group.name))
+                        .strong()
+                        .color(accent()),
+                );
                 for event_id in &group.event_ids {
                     let Some(event) = events.iter().find(|event| &event.id == event_id) else {
                         continue;
@@ -1107,8 +1310,33 @@ impl UiApp {
     }
 
     fn builds(&mut self, ui: &mut egui::Ui) {
-        let names = self.state.lock().ok().map(|s| s.characters.iter().map(|c| (c.name.clone(), c.class_name.clone(), c.route.pob_gems.len(), c.route.tree_specs.iter().map(|t| t.nodes.len()).sum::<usize>())).collect::<Vec<_>>()).unwrap_or_default();
-        let active = self.state.lock().ok().and_then(|s| s.settings.active_character.clone());
+        let names = self
+            .state
+            .lock()
+            .ok()
+            .map(|s| {
+                s.characters
+                    .iter()
+                    .map(|c| {
+                        (
+                            c.name.clone(),
+                            c.class_name.clone(),
+                            c.route.pob_gems.len(),
+                            c.route
+                                .tree_specs
+                                .iter()
+                                .map(|t| t.nodes.len())
+                                .sum::<usize>(),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let active = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|s| s.settings.active_character.clone());
         section(ui, "Characters");
         if names.is_empty() {
             ui.label(RichText::new("No characters yet.").color(muted()));
@@ -1123,7 +1351,10 @@ impl UiApp {
                 ui.horizontal(|ui| {
                     self.icon_ui(ui, "trial", 22.0);
                     ui.add_space(8.0);
-                    if ui.selectable_label(selected, RichText::new(&name).size(16.0).strong()).clicked() {
+                    if ui
+                        .selectable_label(selected, RichText::new(&name).size(16.0).strong())
+                        .clicked()
+                    {
                         if let Ok(mut state) = self.state.lock() {
                             state.settings.active_character = Some(name);
                             state.dirty_settings = true;
@@ -1137,9 +1368,16 @@ impl UiApp {
             });
             ui.add_space(8.0);
         }
-        let skipped = self.state.lock().ok().and_then(|state| {
-            state.active_character().map(|character| character.progress.skipped_groups.len())
-        }).unwrap_or(0);
+        let skipped = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|state| {
+                state
+                    .active_character()
+                    .map(|character| character.progress.skipped_groups.len())
+            })
+            .unwrap_or(0);
         if ui.button(format!("Skipped Events ({skipped})")).clicked() {
             self.show_skipped = !self.show_skipped;
         }
@@ -1151,16 +1389,22 @@ impl UiApp {
         ui.label(RichText::new("Paste a Path of Building Community link, usually pobb.in or pastebin. Campaign gems from that build are added to the character.").color(muted()));
         ui.add_space(8.0);
         card().show(ui, |ui| {
-            egui::Grid::new("import_build").num_columns(2).spacing(egui::vec2(16.0, 14.0)).show(ui, |ui| {
-                ui.label("Name");
-                ui.add(line_edit(&mut self.new_name).desired_width(320.0));
-                ui.end_row();
-                ui.label("PoB link");
-                ui.add(line_edit(&mut self.new_pob).desired_width(320.0));
-                ui.end_row();
-            });
+            egui::Grid::new("import_build")
+                .num_columns(2)
+                .spacing(egui::vec2(16.0, 14.0))
+                .show(ui, |ui| {
+                    ui.label("Name");
+                    ui.add(line_edit(&mut self.new_name).desired_width(320.0));
+                    ui.end_row();
+                    ui.label("PoB link");
+                    ui.add(line_edit(&mut self.new_pob).desired_width(320.0));
+                    ui.end_row();
+                });
             ui.add_space(8.0);
-            if ui.add_sized([140.0, 36.0], egui::Button::new("Import")).clicked() {
+            if ui
+                .add_sized([140.0, 36.0], egui::Button::new("Import"))
+                .clicked()
+            {
                 self.import_build();
             }
         });
@@ -1185,7 +1429,9 @@ impl UiApp {
         let fetched = fetch_pob(&link)
             .map_err(|err| err.to_string())
             .and_then(|body| poe_core::decode_pob(&body).map_err(|err| err.to_string()));
-        let Ok(mut state) = self.state.lock() else { return };
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
         match fetched {
             Ok(build) if build.class_name.is_empty() => {
                 state.status = "That build does not say which class it is.".into();
@@ -1229,93 +1475,105 @@ impl UiApp {
         });
         ui.add_space(8.0);
         let query = self.search.to_ascii_lowercase();
-        let Ok(mut state) = self.state.lock() else { return };
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let full = ui.available_width();
-            section(ui, "Gems");
-            let mut gem_delete = None;
-            let mut dirty = false;
-            table_head(ui, &["Id", "Name", ""]);
-            let mut shown = 0;
-            for (index, gem) in state.catalog.gems.iter_mut().enumerate() {
-                if !query.is_empty() && !gem.name.to_ascii_lowercase().contains(&query) {
-                    continue;
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                let full = ui.available_width();
+                section(ui, "Gems");
+                let mut gem_delete = None;
+                let mut dirty = false;
+                table_head(ui, &["Id", "Name", ""]);
+                let mut shown = 0;
+                for (index, gem) in state.catalog.gems.iter_mut().enumerate() {
+                    if !query.is_empty() && !gem.name.to_ascii_lowercase().contains(&query) {
+                        continue;
+                    }
+                    let (id_w, name_w, tail_w) = split3(full, 0.34, 110.0);
+                    let stripe = shown % 2 == 0;
+                    let mut delete = false;
+                    let mut edited = false;
+                    striped(ui, stripe, |ui| {
+                        id_cell(ui, id_w, &gem.id);
+                        edited = wide_edit(ui, name_w, &mut gem.name).changed();
+                        delete = ui
+                            .add_sized([tail_w, 36.0], egui::Button::new("Delete"))
+                            .clicked();
+                    });
+                    dirty |= edited;
+                    if delete {
+                        gem_delete = Some(index);
+                    }
+                    shown += 1;
+                    if index > 40 && query.is_empty() {
+                        ui.label(RichText::new("Search to see more gems.").color(muted()));
+                        break;
+                    }
                 }
-                let (id_w, name_w, tail_w) = split3(full, 0.34, 110.0);
-                let stripe = shown % 2 == 0;
-                let mut delete = false;
-                let mut edited = false;
-                striped(ui, stripe, |ui| {
-                    id_cell(ui, id_w, &gem.id);
-                    edited = wide_edit(ui, name_w, &mut gem.name).changed();
-                    delete = ui.add_sized([tail_w, 36.0], egui::Button::new("Delete")).clicked();
-                });
-                dirty |= edited;
-                if delete {
-                    gem_delete = Some(index);
+                if let Some(index) = gem_delete {
+                    state.catalog.gems.remove(index);
+                    dirty = true;
                 }
-                shown += 1;
-                if index > 40 && query.is_empty() {
-                    ui.label(RichText::new("Search to see more gems.").color(muted()));
-                    break;
-                }
-            }
-            if let Some(index) = gem_delete {
-                state.catalog.gems.remove(index);
-                dirty = true;
-            }
-            state.dirty_catalog |= dirty;
+                state.dirty_catalog |= dirty;
 
-            section(ui, "Areas");
-            table_head(ui, &["Id", "Name", "Act"]);
-            shown = 0;
-            let mut dirty = false;
-            for area in &mut state.catalog.areas {
-                if !query.is_empty() && !area.name.to_ascii_lowercase().contains(&query) && !area.id.contains(&query) {
-                    continue;
+                section(ui, "Areas");
+                table_head(ui, &["Id", "Name", "Act"]);
+                shown = 0;
+                let mut dirty = false;
+                for area in &mut state.catalog.areas {
+                    if !query.is_empty()
+                        && !area.name.to_ascii_lowercase().contains(&query)
+                        && !area.id.contains(&query)
+                    {
+                        continue;
+                    }
+                    let (id_w, name_w, act_w) = split3(full, 0.38, 96.0);
+                    let stripe = shown % 2 == 0;
+                    let mut edited = false;
+                    striped(ui, stripe, |ui| {
+                        id_cell(ui, id_w, &area.id);
+                        edited = wide_edit(ui, name_w, &mut area.name).changed();
+                        edited |= ui
+                            .add_sized(
+                                [act_w, 36.0],
+                                egui::DragValue::new(&mut area.act).range(1..=10),
+                            )
+                            .changed();
+                    });
+                    dirty |= edited;
+                    shown += 1;
+                    if shown > 40 && query.is_empty() {
+                        break;
+                    }
                 }
-                let (id_w, name_w, act_w) = split3(full, 0.38, 96.0);
-                let stripe = shown % 2 == 0;
-                let mut edited = false;
-                striped(ui, stripe, |ui| {
-                    id_cell(ui, id_w, &area.id);
-                    edited = wide_edit(ui, name_w, &mut area.name).changed();
-                    edited |= ui
-                        .add_sized([act_w, 36.0], egui::DragValue::new(&mut area.act).range(1..=10))
-                        .changed();
-                });
-                dirty |= edited;
-                shown += 1;
-                if shown > 40 && query.is_empty() {
-                    break;
-                }
-            }
-            state.dirty_catalog |= dirty;
+                state.dirty_catalog |= dirty;
 
-            section(ui, "Quests");
-            table_head(ui, &["Id", "Name", "NPC"]);
-            shown = 0;
-            let mut dirty = false;
-            for quest in &mut state.catalog.quests {
-                if !query.is_empty() && !quest.name.to_ascii_lowercase().contains(&query) {
-                    continue;
+                section(ui, "Quests");
+                table_head(ui, &["Id", "Name", "NPC"]);
+                shown = 0;
+                let mut dirty = false;
+                for quest in &mut state.catalog.quests {
+                    if !query.is_empty() && !quest.name.to_ascii_lowercase().contains(&query) {
+                        continue;
+                    }
+                    let (id_w, name_w, npc_w) = split3(full, 0.28, full * 0.30);
+                    let stripe = shown % 2 == 0;
+                    let mut edited = false;
+                    striped(ui, stripe, |ui| {
+                        id_cell(ui, id_w, &quest.id);
+                        edited = wide_edit(ui, name_w, &mut quest.name).changed();
+                        edited |= wide_edit(ui, npc_w, &mut quest.npc).changed();
+                    });
+                    dirty |= edited;
+                    shown += 1;
+                    if shown > 30 && query.is_empty() {
+                        break;
+                    }
                 }
-                let (id_w, name_w, npc_w) = split3(full, 0.28, full * 0.30);
-                let stripe = shown % 2 == 0;
-                let mut edited = false;
-                striped(ui, stripe, |ui| {
-                    id_cell(ui, id_w, &quest.id);
-                    edited = wide_edit(ui, name_w, &mut quest.name).changed();
-                    edited |= wide_edit(ui, npc_w, &mut quest.npc).changed();
-                });
-                dirty |= edited;
-                shown += 1;
-                if shown > 30 && query.is_empty() {
-                    break;
-                }
-            }
-            state.dirty_catalog |= dirty;
-        });
+                state.dirty_catalog |= dirty;
+            });
     }
 
     fn landmarks(&mut self, ui: &mut egui::Ui) {
@@ -1329,7 +1587,12 @@ impl UiApp {
             }
         }
         ui.add_space(12.0);
-        let mut landmarks = self.state.lock().ok().map(|s| s.settings.landmarks.clone()).unwrap_or_default();
+        let mut landmarks = self
+            .state
+            .lock()
+            .ok()
+            .map(|s| s.settings.landmarks.clone())
+            .unwrap_or_default();
         let mut changed = false;
         let full = ui.available_width();
         let (width, cols) = tile_columns(full, 420.0);
@@ -1338,19 +1601,35 @@ impl UiApp {
             let end = (start + cols).min(landmarks.len());
             tile_row(ui, full, |ui| {
                 for landmark in &mut landmarks[start..end] {
-                    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                        card().show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                changed |= ui.checkbox(&mut landmark.enabled, "").changed();
-                                ui.label(RichText::new(format!("Act {}", landmark.act)).color(accent()).strong());
-                                ui.label(RichText::new(&landmark.areas).strong());
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            card().show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    changed |= ui.checkbox(&mut landmark.enabled, "").changed();
+                                    ui.label(
+                                        RichText::new(format!("Act {}", landmark.act))
+                                            .color(accent())
+                                            .strong(),
+                                    );
+                                    ui.label(RichText::new(&landmark.areas).strong());
+                                });
+                                ui.add_space(8.0);
+                                changed |= area_edit(ui, ui.available_width(), &mut landmark.text)
+                                    .changed();
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(format!(
+                                        "Shows while you are in {}.",
+                                        landmark.areas
+                                    ))
+                                    .size(13.0)
+                                    .color(muted()),
+                                );
                             });
-                            ui.add_space(8.0);
-                            changed |= area_edit(ui, ui.available_width(), &mut landmark.text).changed();
-                            ui.add_space(6.0);
-                            ui.label(RichText::new(format!("Shows while you are in {}.", landmark.areas)).size(13.0).color(muted()));
-                        });
-                    });
+                        },
+                    );
                 }
             });
             start = end;
@@ -1364,18 +1643,31 @@ impl UiApp {
     }
 
     fn regex_tab(&mut self, ui: &mut egui::Ui) {
-        let gem_names = self.state.lock().ok().and_then(|s| {
-            s.active_character().map(|c| {
-                visible_lines(&c.route, &c.progress, s.settings.acts, s.settings.gems, s.settings.tips)
+        let gem_names = self
+            .state
+            .lock()
+            .ok()
+            .and_then(|s| {
+                s.active_character().map(|c| {
+                    visible_lines(
+                        &c.route,
+                        &c.progress,
+                        s.settings.acts,
+                        s.settings.gems,
+                        s.settings.tips,
+                    )
                     .into_iter()
                     .filter_map(|line| line.gem_name)
                     .collect::<Vec<_>>()
+                })
             })
-        }).unwrap_or_default();
+            .unwrap_or_default();
         let generated = vendor_gem_regex(&gem_names);
         section(ui, "Generated");
         card().show(ui, |ui| {
-            ui.label(RichText::new("From the gems still showing for this character.").color(muted()));
+            ui.label(
+                RichText::new("From the gems still showing for this character.").color(muted()),
+            );
             ui.add_space(8.0);
             ui.label(RichText::new(&generated).monospace().size(14.0));
             ui.add_space(12.0);
@@ -1393,8 +1685,18 @@ impl UiApp {
             });
         });
         section(ui, "Presets");
-        let mut presets = self.state.lock().ok().map(|s| s.regex_presets.clone()).unwrap_or_default();
-        let mut active = self.state.lock().ok().map(|s| s.settings.active_regex).unwrap_or(0);
+        let mut presets = self
+            .state
+            .lock()
+            .ok()
+            .map(|s| s.regex_presets.clone())
+            .unwrap_or_default();
+        let mut active = self
+            .state
+            .lock()
+            .ok()
+            .map(|s| s.settings.active_regex)
+            .unwrap_or(0);
         let mut changed = false;
         let mut delete = None;
         let full = ui.available_width();
@@ -1403,43 +1705,60 @@ impl UiApp {
         while start < presets.len() {
             let end = (start + cols).min(presets.len());
             tile_row(ui, full, |ui| {
-                for (index, preset) in presets.iter_mut().enumerate().skip(start).take(end - start) {
-                    ui.allocate_ui_with_layout(egui::vec2(width, 0.0), egui::Layout::top_down(egui::Align::Min), |ui| {
-                        let mut frame = card();
-                        if active == index {
-                            frame.stroke = egui::Stroke::new(1.0_f32, accent());
-                        }
-                        frame.show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                if ui.radio(active == index, "").clicked() {
-                                    active = index;
-                                    changed = true;
-                                }
-                                let name_w = (ui.available_width() - 100.0).max(120.0);
-                                changed |= wide_edit(ui, name_w, &mut preset.name).changed();
-                                if ui.add_sized([92.0, 36.0], egui::Button::new("Delete")).clicked() {
-                                    delete = Some(index);
-                                }
-                            });
-                            ui.add_space(8.0);
-                            ui.horizontal(|ui| {
-                                let copy_w = 92.0;
-                                let regex_w = (ui.available_width() - copy_w - ui.spacing().item_spacing.x).max(120.0);
-                                changed |= wide_edit(ui, regex_w, &mut preset.regex).changed();
-                                if ui.add_sized([copy_w, 36.0], egui::Button::new("Copy")).clicked() {
-                                    if let Ok(mut state) = self.state.lock() {
-                                        state.status = format!("copy:{}", preset.regex);
+                for (index, preset) in presets.iter_mut().enumerate().skip(start).take(end - start)
+                {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(width, 0.0),
+                        egui::Layout::top_down(egui::Align::Min),
+                        |ui| {
+                            let mut frame = card();
+                            if active == index {
+                                frame.stroke = egui::Stroke::new(1.0_f32, accent());
+                            }
+                            frame.show(ui, |ui| {
+                                ui.horizontal(|ui| {
+                                    if ui.radio(active == index, "").clicked() {
+                                        active = index;
+                                        changed = true;
                                     }
-                                }
+                                    let name_w = (ui.available_width() - 100.0).max(120.0);
+                                    changed |= wide_edit(ui, name_w, &mut preset.name).changed();
+                                    if ui
+                                        .add_sized([92.0, 36.0], egui::Button::new("Delete"))
+                                        .clicked()
+                                    {
+                                        delete = Some(index);
+                                    }
+                                });
+                                ui.add_space(8.0);
+                                ui.horizontal(|ui| {
+                                    let copy_w = 92.0;
+                                    let regex_w = (ui.available_width()
+                                        - copy_w
+                                        - ui.spacing().item_spacing.x)
+                                        .max(120.0);
+                                    changed |= wide_edit(ui, regex_w, &mut preset.regex).changed();
+                                    if ui
+                                        .add_sized([copy_w, 36.0], egui::Button::new("Copy"))
+                                        .clicked()
+                                    {
+                                        if let Ok(mut state) = self.state.lock() {
+                                            state.status = format!("copy:{}", preset.regex);
+                                        }
+                                    }
+                                });
                             });
-                        });
-                    });
+                        },
+                    );
                 }
             });
             start = end;
         }
         if ui.button("Add preset").clicked() {
-            presets.push(poe_core::RegexPreset { name: "Custom".into(), regex: String::new() });
+            presets.push(poe_core::RegexPreset {
+                name: "Custom".into(),
+                regex: String::new(),
+            });
             changed = true;
         }
         if let Some(index) = delete {
@@ -1464,7 +1783,10 @@ fn column_widths(total: f32, weights: &[f32], gap: f32) -> Vec<f32> {
     }
     let usable = (total - gap * (count - 1) as f32).max(0.0);
     let sum = weights.iter().sum::<f32>().max(f32::EPSILON);
-    let mut widths: Vec<f32> = weights.iter().map(|weight| (usable * weight / sum).max(0.0)).collect();
+    let mut widths: Vec<f32> = weights
+        .iter()
+        .map(|weight| (usable * weight / sum).max(0.0))
+        .collect();
     let assigned = widths.iter().sum::<f32>();
     if let Some(last) = widths.last_mut() {
         *last = (*last + (usable - assigned)).max(0.0);
@@ -1472,7 +1794,13 @@ fn column_widths(total: f32, weights: &[f32], gap: f32) -> Vec<f32> {
     widths
 }
 
-fn fit_columns(ui: &mut egui::Ui, weights: &[f32], gap: f32, height: Option<f32>, mut add: impl FnMut(&mut egui::Ui, f32, usize)) {
+fn fit_columns(
+    ui: &mut egui::Ui,
+    weights: &[f32],
+    gap: f32,
+    height: Option<f32>,
+    mut add: impl FnMut(&mut egui::Ui, f32, usize),
+) {
     let total = ui.available_width().max(0.0);
     let widths = column_widths(total, weights, gap);
     let origin = ui.cursor().min;
@@ -1481,7 +1809,8 @@ fn fit_columns(ui: &mut egui::Ui, weights: &[f32], gap: f32, height: Option<f32>
     for (index, width) in widths.iter().copied().enumerate() {
         let x = origin.x + widths[..index].iter().sum::<f32>() + gap * index as f32;
         let y_bottom = fixed_bottom.unwrap_or(origin.y + 1.0e6);
-        let rect = egui::Rect::from_min_max(egui::pos2(x, origin.y), egui::pos2(x + width, y_bottom));
+        let rect =
+            egui::Rect::from_min_max(egui::pos2(x, origin.y), egui::pos2(x + width, y_bottom));
         let mut child = ui.new_child(
             egui::UiBuilder::new()
                 .id_salt(("fit", index, origin.y.to_bits()))
@@ -1507,7 +1836,10 @@ fn fit_columns(ui: &mut egui::Ui, weights: &[f32], gap: f32, height: Option<f32>
         Some(bottom) => (bottom - origin.y).max(0.0),
         None => (used_bottom - origin.y).max(0.0),
     };
-    ui.advance_cursor_after_rect(egui::Rect::from_min_size(origin, egui::vec2(total, used_height)));
+    ui.advance_cursor_after_rect(egui::Rect::from_min_size(
+        origin,
+        egui::vec2(total, used_height),
+    ));
 }
 
 fn labeled(ui: &mut egui::Ui, width: f32, label: &str, add: impl FnOnce(&mut egui::Ui, f32)) {
@@ -1530,12 +1862,18 @@ fn labeled(ui: &mut egui::Ui, width: f32, label: &str, add: impl FnOnce(&mut egu
     });
 }
 
-fn fit_slider(ui: &mut egui::Ui, width: f32, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> bool {
+fn fit_slider(
+    ui: &mut egui::Ui,
+    width: f32,
+    value: &mut f32,
+    range: std::ops::RangeInclusive<f32>,
+) -> bool {
     let value_w = 84.0;
     let gap = 8.0;
     ui.spacing_mut().slider_width = (width - value_w - gap).max(48.0);
     ui.spacing_mut().item_spacing.x = gap;
-    ui.add(egui::Slider::new(value, range).max_decimals(2)).changed()
+    ui.add(egui::Slider::new(value, range).max_decimals(2))
+        .changed()
 }
 
 fn option_card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
@@ -1564,6 +1902,8 @@ fn builtin_hotkey(hotkeys: &Hotkeys, field: &str) -> String {
         "paste_regex" => hotkeys.paste_regex.clone(),
         "events_back" => hotkeys.events_back.clone(),
         "events_forward" => hotkeys.events_forward.clone(),
+        "group_back" => hotkeys.group_back.clone(),
+        "group_forward" => hotkeys.group_forward.clone(),
         _ => hotkeys.clear_modifiers.clone(),
     }
 }
@@ -1575,6 +1915,8 @@ fn set_builtin_hotkey(hotkeys: &mut Hotkeys, field: &str, chord: String) {
         "paste_regex" => hotkeys.paste_regex = chord,
         "events_back" => hotkeys.events_back = chord,
         "events_forward" => hotkeys.events_forward = chord,
+        "group_back" => hotkeys.group_back = chord,
+        "group_forward" => hotkeys.group_forward = chord,
         _ => hotkeys.clear_modifiers = chord,
     }
 }
@@ -1799,7 +2141,12 @@ fn card() -> egui::Frame {
 fn sidebar_frame() -> egui::Frame {
     egui::Frame::NONE
         .fill(Color32::from_rgb(16, 18, 22))
-        .inner_margin(egui::Margin { left: 6, right: 16, top: 16, bottom: 2 })
+        .inner_margin(egui::Margin {
+            left: 6,
+            right: 16,
+            top: 16,
+            bottom: 2,
+        })
 }
 
 fn page_frame() -> egui::Frame {
@@ -1863,26 +2210,51 @@ fn trigger_list(ui: &mut egui::Ui, triggers: &mut Vec<TriggerKind>, budget: f32)
         let field_w = (width - label_w - button_w - 24.0).max(36.0);
         ui.horizontal(|ui| {
             ui.set_max_width(width);
-            ui.add_sized([label_w, 24.0], egui::Label::new(trigger.label()).truncate());
+            ui.add_sized(
+                [label_w, 24.0],
+                egui::Label::new(trigger.label()).truncate(),
+            );
             match trigger {
                 TriggerKind::ZoneEnter { area_id } => {
-                    changed |= ui.add_sized([field_w, 36.0], line_edit(area_id).desired_width(field_w).clip_text(true)).changed();
+                    changed |= ui
+                        .add_sized(
+                            [field_w, 36.0],
+                            line_edit(area_id).desired_width(field_w).clip_text(true),
+                        )
+                        .changed();
                 }
                 TriggerKind::ZoneName { name } => {
-                    changed |= ui.add_sized([field_w, 36.0], line_edit(name).desired_width(field_w).clip_text(true)).changed();
+                    changed |= ui
+                        .add_sized(
+                            [field_w, 36.0],
+                            line_edit(name).desired_width(field_w).clip_text(true),
+                        )
+                        .changed();
                 }
                 TriggerKind::ActStart { act } | TriggerKind::ActEnd { act } => {
-                    changed |= ui.add_sized([field_w, 36.0], egui::DragValue::new(act).range(1..=10)).changed();
+                    changed |= ui
+                        .add_sized([field_w, 36.0], egui::DragValue::new(act).range(1..=10))
+                        .changed();
                 }
                 TriggerKind::LevelAtLeast { level } => {
-                    changed |= ui.add_sized([field_w, 36.0], egui::DragValue::new(level)).changed();
+                    changed |= ui
+                        .add_sized([field_w, 36.0], egui::DragValue::new(level))
+                        .changed();
                 }
                 TriggerKind::PassiveAllocated { id } => {
-                    changed |= ui.add_sized([field_w, 36.0], line_edit(id).desired_width(field_w).clip_text(true)).changed();
+                    changed |= ui
+                        .add_sized(
+                            [field_w, 36.0],
+                            line_edit(id).desired_width(field_w).clip_text(true),
+                        )
+                        .changed();
                 }
                 TriggerKind::Manual => {}
             }
-            if ui.add_sized([button_w, 32.0], egui::Button::new("x")).clicked() {
+            if ui
+                .add_sized([button_w, 32.0], egui::Button::new("x"))
+                .clicked()
+            {
                 delete = Some(index);
             }
         });
@@ -1892,7 +2264,9 @@ fn trigger_list(ui: &mut egui::Ui, triggers: &mut Vec<TriggerKind>, budget: f32)
         changed = true;
     }
     if ui.button("Add zone trigger").clicked() {
-        triggers.push(TriggerKind::ZoneEnter { area_id: String::new() });
+        triggers.push(TriggerKind::ZoneEnter {
+            area_id: String::new(),
+        });
         changed = true;
     }
     changed
@@ -1902,14 +2276,28 @@ fn group_drop(route: &mut poe_core::CharacterRoute, from: &str, onto: &str) {
     for group in &mut route.groups {
         group.event_ids.retain(|id| id != from);
     }
-    if let Some(group) = route.groups.iter_mut().find(|g| g.event_ids.iter().any(|id| id == onto)) {
+    if let Some(group) = route
+        .groups
+        .iter_mut()
+        .find(|g| g.event_ids.iter().any(|id| id == onto))
+    {
         if !group.event_ids.iter().any(|id| id == from) {
             group.event_ids.push(from.to_string());
         }
         return;
     }
-    let act = route.events.iter().find(|e| e.id == onto).map(|e| e.act).unwrap_or(1);
-    let start = route.events.iter().find(|e| e.id == onto).map(|e| e.start.clone()).unwrap_or_default();
+    let act = route
+        .events
+        .iter()
+        .find(|e| e.id == onto)
+        .map(|e| e.act)
+        .unwrap_or(1);
+    let start = route
+        .events
+        .iter()
+        .find(|e| e.id == onto)
+        .map(|e| e.start.clone())
+        .unwrap_or_default();
     route.groups.push(EventGroup {
         id: format!("user-{from}-{onto}"),
         act,

@@ -49,7 +49,10 @@ pub fn parse_markup(input: &str) -> Vec<TextSpan> {
 }
 
 pub fn plain_text(input: &str) -> String {
-    parse_markup(input).into_iter().map(|span| span.text).collect()
+    parse_markup(input)
+        .into_iter()
+        .map(|span| span.text)
+        .collect()
 }
 
 pub fn tone_rgb(tone: TextTone) -> Option<[u8; 3]> {
@@ -96,13 +99,28 @@ mod tests {
         assert_eq!(
             spans,
             vec![
-                TextSpan { text: "Enter ".into(), tone: TextTone::Plain },
-                TextSpan { text: "The Coast".into(), tone: TextTone::Location },
-                TextSpan { text: " for ".into(), tone: TextTone::Plain },
-                TextSpan { text: "Glyph".into(), tone: TextTone::Item },
+                TextSpan {
+                    text: "Enter ".into(),
+                    tone: TextTone::Plain
+                },
+                TextSpan {
+                    text: "The Coast".into(),
+                    tone: TextTone::Location
+                },
+                TextSpan {
+                    text: " for ".into(),
+                    tone: TextTone::Plain
+                },
+                TextSpan {
+                    text: "Glyph".into(),
+                    tone: TextTone::Item
+                },
             ]
         );
         assert_eq!(plain_text("Enter {loc}The Coast{/}"), "Enter The Coast");
-        assert_eq!(parse_markup("Buy {blue}Frostblink{/}").last().unwrap().tone, TextTone::Intelligence);
+        assert_eq!(
+            parse_markup("Buy {blue}Frostblink{/}").last().unwrap().tone,
+            TextTone::Intelligence
+        );
     }
 }

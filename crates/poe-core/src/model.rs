@@ -79,7 +79,11 @@ pub struct ChatCommand {
 }
 
 impl ChatCommand {
-    pub fn new(label: impl Into<String>, text: impl Into<String>, hotkey: impl Into<String>) -> Self {
+    pub fn new(
+        label: impl Into<String>,
+        text: impl Into<String>,
+        hotkey: impl Into<String>,
+    ) -> Self {
         Self {
             id: format!("chat-{}", chat_id()),
             label: label.into(),
@@ -134,6 +138,10 @@ pub struct Hotkeys {
     pub events_back: String,
     #[serde(default = "default_events_forward")]
     pub events_forward: String,
+    #[serde(default = "default_group_back")]
+    pub group_back: String,
+    #[serde(default = "default_group_forward")]
+    pub group_forward: String,
     #[serde(default = "default_chat_commands")]
     pub chat: Vec<ChatCommand>,
 }
@@ -147,6 +155,8 @@ impl Default for Hotkeys {
             clear_modifiers: "ctrl+alt".into(),
             events_back: default_events_back(),
             events_forward: default_events_forward(),
+            group_back: default_group_back(),
+            group_forward: default_group_forward(),
             chat: default_chat_commands(),
         }
     }
@@ -158,6 +168,14 @@ fn default_events_back() -> String {
 
 fn default_events_forward() -> String {
     "ctrl+shift+right".into()
+}
+
+fn default_group_back() -> String {
+    "ctrl+,".into()
+}
+
+fn default_group_forward() -> String {
+    "ctrl+.".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -347,6 +365,8 @@ pub struct CharacterRoute {
     pub pob_notes: String,
     pub pob_url: String,
     pub pob_gems: Vec<String>,
+    #[serde(default)]
+    pub bandit: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -364,6 +384,10 @@ pub struct CharacterProgress {
     pub trial_gems: bool,
     #[serde(default)]
     pub skipped_groups: Vec<String>,
+    #[serde(default)]
+    pub cleared_groups: Vec<String>,
+    #[serde(default)]
+    pub anchor_group: Option<String>,
     #[serde(default)]
     pub view_delta: i32,
 }
@@ -485,10 +509,41 @@ pub fn parse_chord(raw: &str) -> Chord {
             "alt" => chord.alt = true,
             "shift" => chord.shift = true,
             "" => {}
+            "," | "comma" => chord.key = "comma".into(),
+            "." | "dot" | "period" => chord.key = "dot".into(),
             other => chord.key = other.to_string(),
         }
     }
     chord
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BanditChoice {
+    #[default]
+    KillAll,
+    Alira,
+    Kraityn,
+    Oak,
+}
+
+impl BanditChoice {
+    pub fn parse(raw: &str) -> Self {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "alira" => Self::Alira,
+            "kraityn" | "kraitlyn" | "kraitlin" => Self::Kraityn,
+            "oak" => Self::Oak,
+            _ => Self::KillAll,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::KillAll => "kill",
+            Self::Alira => "alira",
+            Self::Kraityn => "kraityn",
+            Self::Oak => "oak",
+        }
+    }
 }
 
 pub fn gem_icon_file(gem_name: &str) -> String {
@@ -521,7 +576,11 @@ mod tests {
 
     #[test]
     fn landmarks_stay_on_for_every_profile() {
-        for experience in [Experience::Beginner, Experience::Intermediate, Experience::Advanced] {
+        for experience in [
+            Experience::Beginner,
+            Experience::Intermediate,
+            Experience::Advanced,
+        ] {
             let mut settings = Settings::default();
             settings.show_landmarks = false;
             settings.apply_experience(experience);

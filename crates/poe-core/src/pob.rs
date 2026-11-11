@@ -1,4 +1,4 @@
-use crate::model::TreeSpec;
+use crate::model::{BanditChoice, TreeSpec};
 use base64::Engine;
 use flate2::read::ZlibDecoder;
 use std::io::Read;
@@ -11,6 +11,7 @@ pub struct PobBuild {
     pub notes: String,
     pub gems: Vec<String>,
     pub specs: Vec<TreeSpec>,
+    pub bandit: BanditChoice,
 }
 
 #[derive(Debug, Error)]
@@ -52,7 +53,13 @@ fn extract_code(body: &str) -> Option<String> {
     let mut best = String::new();
     let mut current = String::new();
     for ch in body.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '+' || ch == '/' || ch == '=' || ch == '-' || ch == '_' {
+        if ch.is_ascii_alphanumeric()
+            || ch == '+'
+            || ch == '/'
+            || ch == '='
+            || ch == '-'
+            || ch == '_'
+        {
             current.push(ch);
         } else if current.len() > best.len() {
             best = std::mem::take(&mut current);
@@ -101,7 +108,9 @@ fn inflate_code(code: &str) -> Result<String, PobError> {
         .map_err(|_| PobError::Inflate)?;
     let mut decoder = ZlibDecoder::new(bytes.as_slice());
     let mut xml = String::new();
-    decoder.read_to_string(&mut xml).map_err(|_| PobError::Inflate)?;
+    decoder
+        .read_to_string(&mut xml)
+        .map_err(|_| PobError::Inflate)?;
     if xml.contains('<') {
         Ok(xml)
     } else {
@@ -117,7 +126,10 @@ fn parse_xml(xml: &str) -> Result<PobBuild, PobError> {
         notes: String::new(),
         gems: Vec::new(),
         specs: Vec::new(),
+        bandit: BanditChoice::KillAll,
     };
+    let mut active_spec = 0usize;
+    let mut bandits = Vec::new();
     for node in doc.descendants() {
         if node.has_tag_name("Build") {
             if let Some(class_name) = node.attribute("className") {
@@ -131,9 +143,22 @@ fn parse_xml(xml: &str) -> Result<PobBuild, PobError> {
             build.notes = node.text().unwrap_or("").to_string();
         }
         if node.has_tag_name("Gem") {
-            if let Some(name) = node.attribute("nameSpec").or_else(|| node.attribute("gemName")) {
+            if let Some(name) = node
+                .attribute("nameSpec")
+                .or_else(|| node.attribute("gemName"))
+            {
                 if !build.gems.iter().any(|g| g.eq_ignore_ascii_case(name)) {
                     build.gems.push(name.to_string());
+                }
+            }
+        }
+        if node.has_tag_name("Tree") {
+            if let Some(active) = node
+                .attribute("activeSpec")
+                .and_then(|value| value.parse::<usize>().ok())
+            {
+                if active > 0 {
+                    active_spec = active - 1;
                 }
             }
         }
@@ -144,6 +169,11 @@ fn parse_xml(xml: &str) -> Result<PobBuild, PobError> {
                 .split(',')
                 .filter_map(|n| n.trim().parse::<u32>().ok())
                 .collect();
+            bandits.push(
+                node.attribute("bandit")
+                    .map(BanditChoice::parse)
+                    .unwrap_or_default(),
+            );
             build.specs.push(TreeSpec {
                 title: node.attribute("title").unwrap_or("Default").to_string(),
                 nodes,
@@ -153,6 +183,11 @@ fn parse_xml(xml: &str) -> Result<PobBuild, PobError> {
             });
         }
     }
+    build.bandit = bandits
+        .get(active_spec)
+        .copied()
+        .or_else(|| bandits.first().copied())
+        .unwrap_or_default();
     if build.class_name.is_empty() {
         if let Some(spec) = build.specs.first() {
             build.class_name = class_from_id(spec.class_id.unwrap_or(0)).to_string();
@@ -178,6 +213,7 @@ pub fn apply_pob(route: &mut crate::model::CharacterRoute, build: &PobBuild) {
     route.pob_notes = build.notes.clone();
     route.pob_gems = build.gems.clone();
     route.tree_specs = build.specs.clone();
+    route.bandit = build.bandit.as_str().to_string();
 }
 
 #[cfg(test)]
@@ -198,5 +234,14 @@ mod tests {
         assert_eq!(build.gems, vec!["Fireball", "Arcane Surge Support"]);
         assert_eq!(build.specs[0].nodes, vec![1, 2, 3]);
         assert!(build.notes.contains("act notes"));
+        assert_eq!(build.bandit, BanditChoice::KillAll);
+    }
+
+    #[test]
+    fn active_spec_selects_the_bandit() {
+        let xml = r#"<PathOfBuilding><Build className="Ranger"></Build><Tree activeSpec="2"><Spec title="A" bandit="Oak" classId="2" nodes="1"/><Spec title="B" bandit="Alira" classId="2" nodes="2"/></Tree></PathOfBuilding>"#;
+        let build = decode_pob(xml).unwrap();
+        assert_eq!(build.bandit, BanditChoice::Alira);
+        assert_eq!(build.specs.len(), 2);
     }
 }

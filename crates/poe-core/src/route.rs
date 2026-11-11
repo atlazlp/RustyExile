@@ -1,6 +1,6 @@
 use crate::model::{
-    AreaInfo, CampaignEvent, Catalog, CharacterRoute, EventGroup, EventKind, GemSource, QuestGem,
-    TriggerKind,
+    AreaInfo, BanditChoice, CampaignEvent, Catalog, CharacterRoute, EventGroup, EventKind,
+    GemSource, QuestGem, TriggerKind,
 };
 use std::collections::HashSet;
 
@@ -20,9 +20,25 @@ pub fn build_route(
     gem_filter: Option<&HashSet<String>>,
     league_start: bool,
 ) -> CharacterRoute {
+    build_route_with(
+        catalog,
+        class_name,
+        gem_filter,
+        league_start,
+        BanditChoice::KillAll,
+    )
+}
+
+pub fn build_route_with(
+    catalog: &Catalog,
+    class_name: &str,
+    gem_filter: Option<&HashSet<String>>,
+    league_start: bool,
+    bandit: BanditChoice,
+) -> CharacterRoute {
     let mut steps = Vec::new();
     for (act, text) in &catalog.routes {
-        steps.extend(parse_act(catalog, *act, text, league_start));
+        steps.extend(parse_act(catalog, *act, text, league_start, bandit));
     }
     assign_leading_area(&mut steps, catalog);
     let mut carry: Option<String> = None;
@@ -34,7 +50,10 @@ pub fn build_route(
         }
     }
 
-    let mut route = CharacterRoute::default();
+    let mut route = CharacterRoute {
+        bandit: bandit.as_str().to_string(),
+        ..CharacterRoute::default()
+    };
     let mut index = 0usize;
     while index < steps.len() {
         let area = steps[index].area_id.clone();
@@ -129,7 +148,12 @@ fn push_quest_gems(
         if quest_id == "a6q4" && gem.source == GemSource::Vendor {
             continue;
         }
-        if !gem.classes.is_empty() && !gem.classes.iter().any(|c| c.eq_ignore_ascii_case(class_name)) {
+        if !gem.classes.is_empty()
+            && !gem
+                .classes
+                .iter()
+                .any(|c| c.eq_ignore_ascii_case(class_name))
+        {
             continue;
         }
         let Some(info) = catalog.gem(&gem.gem_id) else {
@@ -200,16 +224,29 @@ fn strip_support(name: &str) -> &str {
 }
 
 fn is_transfigured(catalog: &Catalog, name: &str) -> bool {
-    if catalog.gems.iter().any(|gem| gem.name.eq_ignore_ascii_case(name)) {
+    if catalog
+        .gems
+        .iter()
+        .any(|gem| gem.name.eq_ignore_ascii_case(name))
+    {
         return false;
     }
     let Some((base, rest)) = name.split_once(" of ") else {
         return false;
     };
-    !rest.is_empty() && catalog.gems.iter().any(|gem| gem.name.eq_ignore_ascii_case(base))
+    !rest.is_empty()
+        && catalog
+            .gems
+            .iter()
+            .any(|gem| gem.name.eq_ignore_ascii_case(base))
 }
 
-fn add_lilly_and_trials(route: &mut CharacterRoute, catalog: &Catalog, class_name: &str, filter: &HashSet<String>) {
+fn add_lilly_and_trials(
+    route: &mut CharacterRoute,
+    catalog: &Catalog,
+    class_name: &str,
+    filter: &HashSet<String>,
+) {
     let Some(quest) = catalog.quest("a6q4") else {
         for name in filter {
             if is_transfigured(catalog, name) {
@@ -228,14 +265,21 @@ fn add_lilly_and_trials(route: &mut CharacterRoute, catalog: &Catalog, class_nam
         };
         if route.events.iter().any(|event| {
             !event.id.starts_with("gem-lilly-")
-                && event.gem_name.as_deref().is_some_and(|gem| names_match(name, gem))
+                && event
+                    .gem_name
+                    .as_deref()
+                    .is_some_and(|gem| names_match(name, gem))
         }) {
             continue;
         }
         let offered = quest.gems.iter().any(|gem| {
             gem.source == GemSource::Vendor
                 && gem.gem_id == info.id
-                && (gem.classes.is_empty() || gem.classes.iter().any(|c| c.eq_ignore_ascii_case(class_name)))
+                && (gem.classes.is_empty()
+                    || gem
+                        .classes
+                        .iter()
+                        .any(|c| c.eq_ignore_ascii_case(class_name)))
         });
         if !offered {
             continue;
@@ -247,7 +291,10 @@ fn add_lilly_and_trials(route: &mut CharacterRoute, catalog: &Catalog, class_nam
         route.events.push(CampaignEvent {
             id,
             act: 6,
-            text: format!("Buy {} from Lilly Roth", gem_color(&info.primary_attribute, &info.name)),
+            text: format!(
+                "Buy {} from Lilly Roth",
+                gem_color(&info.primary_attribute, &info.name)
+            ),
             detail: String::new(),
             icon: format!("gem:{}", info.name),
             kind: EventKind::GemBuy,
@@ -306,11 +353,19 @@ fn gem_color(attribute: &str, name: &str) -> String {
 }
 
 fn gem_attribute<'a>(catalog: &'a Catalog, name: &str) -> &'a str {
-    if let Some(gem) = catalog.gems.iter().find(|gem| gem.name.eq_ignore_ascii_case(name)) {
+    if let Some(gem) = catalog
+        .gems
+        .iter()
+        .find(|gem| gem.name.eq_ignore_ascii_case(name))
+    {
         return gem.primary_attribute.as_str();
     }
     if let Some((base, _)) = name.split_once(" of ") {
-        if let Some(gem) = catalog.gems.iter().find(|gem| gem.name.eq_ignore_ascii_case(base)) {
+        if let Some(gem) = catalog
+            .gems
+            .iter()
+            .find(|gem| gem.name.eq_ignore_ascii_case(base))
+        {
             return gem.primary_attribute.as_str();
         }
     }
@@ -318,7 +373,10 @@ fn gem_attribute<'a>(catalog: &'a Catalog, name: &str) -> &'a str {
 }
 
 fn push_trial(route: &mut CharacterRoute, catalog: &Catalog, name: &str) {
-    let id = format!("gem-trial-{}", name.replace(|ch: char| !ch.is_ascii_alphanumeric(), "_"));
+    let id = format!(
+        "gem-trial-{}",
+        name.replace(|ch: char| !ch.is_ascii_alphanumeric(), "_")
+    );
     if route.events.iter().any(|event| event.id == id) {
         return;
     }
@@ -380,8 +438,14 @@ fn triggers_for(area_id: Option<&str>, name: &str) -> Vec<TriggerKind> {
     }
 }
 
-fn parse_act(catalog: &Catalog, act: u8, text: &str, league_start: bool) -> Vec<RawStep> {
-    let filtered = apply_conditionals(text, league_start);
+fn parse_act(
+    catalog: &Catalog,
+    act: u8,
+    text: &str,
+    league_start: bool,
+    bandit: BanditChoice,
+) -> Vec<RawStep> {
+    let filtered = apply_conditionals(text, league_start, bandit);
     let mut steps: Vec<RawStep> = Vec::new();
     for line in filtered.lines() {
         let trimmed = line.trim();
@@ -422,9 +486,15 @@ fn parse_act(catalog: &Catalog, act: u8, text: &str, league_start: bool) -> Vec<
         if text.trim().is_empty() {
             continue;
         }
+        let mut detail = Vec::new();
+        if text.starts_with("Hand in ") {
+            if let Some(place) = hand_in_place(catalog, &quest_ids, act) {
+                detail.push(place);
+            }
+        }
         steps.push(RawStep {
             text: text.trim().to_string(),
-            detail: Vec::new(),
+            detail,
             icon,
             area_id,
             quest_ids,
@@ -432,6 +502,24 @@ fn parse_act(catalog: &Catalog, act: u8, text: &str, league_start: bool) -> Vec<
         });
     }
     steps
+}
+
+fn hand_in_place(catalog: &Catalog, quest_ids: &[String], act: u8) -> Option<String> {
+    let npc = quest_ids.iter().find_map(|id| {
+        let quest = catalog.quest(id)?;
+        if quest.npc.is_empty() {
+            None
+        } else {
+            Some(quest.npc.clone())
+        }
+    })?;
+    let town = catalog
+        .areas
+        .iter()
+        .find(|area| area.act == act && area.is_town && !area.name.is_empty())?
+        .name
+        .clone();
+    Some(format!("{npc} in {town}"))
 }
 
 fn enter_only(body: &str) -> bool {
@@ -507,10 +595,7 @@ fn render_line(catalog: &Catalog, body: &str) -> (String, String, Option<String>
     (cleaned, icon, area_id, quest_ids)
 }
 
-fn render_token(
-    catalog: &Catalog,
-    token: &str,
-) -> (String, String, Option<String>, Vec<String>) {
+fn render_token(catalog: &Catalog, token: &str) -> (String, String, Option<String>, Vec<String>) {
     let mut parts = token.split('|');
     let kind = parts.next().unwrap_or("");
     let args: Vec<&str> = parts.collect();
@@ -518,25 +603,32 @@ fn render_token(
     match kind {
         "enter" | "area" => {
             let area = catalog.area(first);
-            let name = area.map(|a| a.name.clone()).unwrap_or_else(|| first.to_string());
+            let name = area
+                .map(|a| a.name.clone())
+                .unwrap_or_else(|| first.to_string());
             let icon = if area.is_some_and(|a| a.is_town) {
                 "town"
             } else {
                 "portal"
             };
-            (
-                format!("Enter {}", loc(&name)),
-                icon.into(),
-                Some(first.to_string()),
-                Vec::new(),
-            )
+            let label = if kind == "area" {
+                loc(&name)
+            } else {
+                format!("Enter {}", loc(&name))
+            };
+            (label, icon.into(), Some(first.to_string()), Vec::new())
         }
         "waypoint" => {
             let name = catalog
                 .area(first)
                 .map(|a| a.name.clone())
                 .unwrap_or_else(|| first.to_string());
-            (format!("Waypoint to {}", loc(&name)), "waypoint".into(), None, Vec::new())
+            (
+                format!("Waypoint to {}", loc(&name)),
+                "waypoint".into(),
+                Some(first.to_string()),
+                Vec::new(),
+            )
         }
         "waypoint_get" => (loc("the Waypoint"), "waypoint".into(), None, Vec::new()),
         "kill" => (first.to_string(), "quest".into(), None, Vec::new()),
@@ -552,13 +644,13 @@ fn render_token(
         "generic" => (first.to_string(), "quest".into(), None, Vec::new()),
         "arena" => (loc(first), "quest".into(), None, Vec::new()),
         "logout" => ("Logout".into(), "portalscroll".into(), None, Vec::new()),
-        "trial" => (
-            loc("Trial of Ascendancy"),
-            "trial".into(),
+        "trial" => (loc("Trial of Ascendancy"), "trial".into(), None, Vec::new()),
+        "crafting" => (
+            "Crafting recipe".into(),
+            "crafting".into(),
             None,
             Vec::new(),
         ),
-        "crafting" => ("Crafting recipe".into(), "crafting".into(), None, Vec::new()),
         "portal" => (
             if first == "use" {
                 "Take town portal".into()
@@ -594,18 +686,29 @@ fn direction(raw: &str) -> &'static str {
     }
 }
 
-fn apply_conditionals(src: &str, league_start: bool) -> String {
+fn flag_enabled(flag: &str, league_start: bool, bandit: BanditChoice) -> bool {
+    match flag.trim() {
+        "LEAGUE_START" => league_start,
+        "BANDIT_KILL" => bandit == BanditChoice::KillAll,
+        "BANDIT_ALIRA" => bandit == BanditChoice::Alira,
+        "BANDIT_KRAITYN" => bandit == BanditChoice::Kraityn,
+        "BANDIT_OAK" => bandit == BanditChoice::Oak,
+        _ => false,
+    }
+}
+
+fn apply_conditionals(src: &str, league_start: bool, bandit: BanditChoice) -> String {
     let mut out = String::new();
     let mut stack = vec![true];
     for line in src.lines() {
         let t = line.trim();
         if let Some(flag) = t.strip_prefix("#ifdef ") {
-            let ok = flag.trim() == "LEAGUE_START" && league_start;
+            let ok = flag_enabled(flag, league_start, bandit);
             stack.push(*stack.last().unwrap_or(&true) && ok);
             continue;
         }
         if let Some(flag) = t.strip_prefix("#ifndef ") {
-            let ok = !(flag.trim() == "LEAGUE_START" && league_start);
+            let ok = !flag_enabled(flag, league_start, bandit);
             stack.push(*stack.last().unwrap_or(&true) && ok);
             continue;
         }
@@ -623,13 +726,22 @@ fn apply_conditionals(src: &str, league_start: bool) -> String {
     out
 }
 
-pub fn refresh_generated_route(file: &mut crate::model::CharacterFile, catalog: &Catalog, league_start: bool) {
+pub fn refresh_generated_route(
+    file: &mut crate::model::CharacterFile,
+    catalog: &Catalog,
+    league_start: bool,
+) {
     if file.user_edited {
         return;
     }
     let filter: HashSet<String> = file.route.pob_gems.iter().cloned().collect();
-    let filtered = if filter.is_empty() { None } else { Some(&filter) };
-    let mut fresh = build_route(catalog, &file.class_name, filtered, league_start);
+    let filtered = if filter.is_empty() {
+        None
+    } else {
+        Some(&filter)
+    };
+    let bandit = BanditChoice::parse(&file.route.bandit);
+    let mut fresh = build_route_with(catalog, &file.class_name, filtered, league_start, bandit);
     fresh.pob_notes = std::mem::take(&mut file.route.pob_notes);
     fresh.pob_url = std::mem::take(&mut file.route.pob_url);
     fresh.pob_gems = std::mem::take(&mut file.route.pob_gems);
@@ -648,17 +760,30 @@ pub fn install_build(
         file.progress.class_name = build.class_name.clone();
     }
     let filter: HashSet<String> = build.gems.iter().cloned().collect();
-    let fresh = build_route(catalog, &file.class_name, Some(&filter), league_start);
+    let fresh = build_route_with(
+        catalog,
+        &file.class_name,
+        Some(&filter),
+        league_start,
+        build.bandit,
+    );
     if file.user_edited {
         file.route.events.retain(|event| !event.kind.is_gem());
         for group in &mut file.route.groups {
-            group.event_ids.retain(|id| file.route.events.iter().any(|event| &event.id == id));
+            group
+                .event_ids
+                .retain(|id| file.route.events.iter().any(|event| &event.id == id));
         }
         for event in fresh.events.into_iter().filter(|event| event.kind.is_gem()) {
             let zone = event.zone_name.clone();
             let id = event.id.clone();
             file.route.events.push(event);
-            if let Some(group) = file.route.groups.iter_mut().find(|group| Some(group.name.as_str()) == zone.as_deref()) {
+            if let Some(group) = file
+                .route
+                .groups
+                .iter_mut()
+                .find(|group| Some(group.name.as_str()) == zone.as_deref())
+            {
                 group.event_ids.push(id);
             }
         }
@@ -673,7 +798,9 @@ pub fn area_named(areas: &[AreaInfo]) -> impl Fn(&str) -> Option<u8> + '_ {
 }
 
 pub fn class_matches(gem: &QuestGem, class_name: &str) -> bool {
-    gem.classes.iter().any(|c| c.eq_ignore_ascii_case(class_name))
+    gem.classes
+        .iter()
+        .any(|c| c.eq_ignore_ascii_case(class_name))
 }
 
 #[cfg(test)]
@@ -755,18 +882,45 @@ Get {waypoint_get}
     #[test]
     fn builds_zone_steps_and_class_gems() {
         let route = build_route(&catalog(), "Witch", None, true);
-        assert!(route.events.iter().any(|e| e.text == "Hand in Enemy at the Gate"));
-        assert!(route.events.iter().any(|e| e.text == "Enter {loc}The Coast{/}"));
-        assert!(route.events.iter().any(|e| e.text == "Get {loc}the Waypoint{/}"));
-        assert!(route.events.iter().any(|e| e.icon == "portal" && e.text == "Enter {loc}The Coast{/}"));
-        assert!(route.events.iter().any(|e| e.text.contains("{blue}Fireball{/}")));
-        assert!(route.events.iter().any(|e| e.detail.contains("Tarkleigh")));
-        let coast = route.events.iter().find(|e| e.text == "Enter {loc}The Coast{/}").unwrap();
+        assert!(route
+            .events
+            .iter()
+            .any(|e| e.text == "Hand in Enemy at the Gate"));
+        assert!(route
+            .events
+            .iter()
+            .any(|e| e.text == "Enter {loc}The Coast{/}"));
+        assert!(route
+            .events
+            .iter()
+            .any(|e| e.text == "Get {loc}the Waypoint{/}"));
+        assert!(route
+            .events
+            .iter()
+            .any(|e| e.icon == "portal" && e.text == "Enter {loc}The Coast{/}"));
+        assert!(route
+            .events
+            .iter()
+            .any(|e| e.text.contains("{blue}Fireball{/}")));
+        assert!(route
+            .events
+            .iter()
+            .any(|e| e.detail.contains("Tarkleigh in Lioneye's Watch")));
+        let coast = route
+            .events
+            .iter()
+            .find(|e| e.text == "Enter {loc}The Coast{/}")
+            .unwrap();
         let coast_group = route.groups.iter().find(|g| g.name == "The Coast").unwrap();
         assert!(coast_group.event_ids.iter().any(|id| id == &coast.id));
-        let submerged = route.groups.iter().find(|g| g.name == "The Submerged Passage").unwrap();
-        let waypoint = route.events.iter().find(|e| e.text == "Waypoint to {loc}The Coast{/}").unwrap();
-        assert!(submerged.event_ids.iter().any(|id| id == &waypoint.id));
+        let waypoint = route
+            .events
+            .iter()
+            .find(|e| e.text == "Waypoint to {loc}The Coast{/}")
+            .unwrap();
+        assert!(route.groups.iter().any(|group| {
+            group.name == "The Coast" && group.event_ids.iter().any(|id| id == &waypoint.id)
+        }));
         assert!(route.groups.iter().any(|g| g.name == "The Tidal Island"));
         assert!(matches!(
             coast.start[0],
@@ -789,12 +943,20 @@ Get {waypoint_get}
         );
         data.routes[0].1 = format!("Find and kill {{kill|Hillock}}\n{}", data.routes[0].1);
         let route = build_route(&data, "Duelist", None, true);
-        let group = route.groups.iter().find(|g| g.name == "The Twilight Strand").unwrap();
+        let group = route
+            .groups
+            .iter()
+            .find(|g| g.name == "The Twilight Strand")
+            .unwrap();
         assert!(matches!(
             group.start[0],
             TriggerKind::ZoneEnter { ref area_id } if area_id == "1_1_1"
         ));
-        let hillock = route.events.iter().find(|e| e.text == "Find and kill Hillock").unwrap();
+        let hillock = route
+            .events
+            .iter()
+            .find(|e| e.text == "Find and kill Hillock")
+            .unwrap();
         assert!(group.event_ids.iter().any(|id| id == &hillock.id));
         assert!(matches!(
             hillock.end[0],
@@ -852,10 +1014,14 @@ Get {waypoint_get}
                 },
             ],
         });
-        let filter: HashSet<String> = ["Void Manipulation", "Added Fire Damage", "Frostblink of Wintry Blast"]
-            .into_iter()
-            .map(str::to_string)
-            .collect();
+        let filter: HashSet<String> = [
+            "Void Manipulation",
+            "Added Fire Damage",
+            "Frostblink of Wintry Blast",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
         let route = build_route(&data, "Witch", Some(&filter), true);
         assert!(route.events.iter().any(|event| {
             event.text.contains("Void Manipulation") && !event.id.starts_with("gem-lilly-")
@@ -870,7 +1036,10 @@ Get {waypoint_get}
             event.id.starts_with("gem-trial-") && event.text.contains("Frostblink of Wintry Blast")
         }));
         assert!(route.groups.iter().all(|group| {
-            group.event_ids.iter().all(|id| !id.starts_with("gem-lilly-") && !id.starts_with("gem-trial-"))
+            group
+                .event_ids
+                .iter()
+                .all(|id| !id.starts_with("gem-lilly-") && !id.starts_with("gem-trial-"))
         }));
     }
 
@@ -943,14 +1112,26 @@ Hand in {quest|a3q12} #A Fixture of Fate
             .into(),
         ));
         let route = build_route(&data, "Witch", None, true);
-        let tarkleigh = route.events.iter().find(|event| event.text.contains("Fireball")).unwrap();
+        let tarkleigh = route
+            .events
+            .iter()
+            .find(|event| event.text.contains("Fireball"))
+            .unwrap();
         assert!(
             tarkleigh.text.contains("{loc}Lioneye's Watch{/}"),
             "{}",
             tarkleigh.text
         );
-        assert!(!tarkleigh.text.contains("Lower Prison"), "{}", tarkleigh.text);
-        let siosa = route.events.iter().find(|event| event.npc.as_deref() == Some("Siosa")).unwrap();
+        assert!(
+            !tarkleigh.text.contains("Lower Prison"),
+            "{}",
+            tarkleigh.text
+        );
+        let siosa = route
+            .events
+            .iter()
+            .find(|event| event.npc.as_deref() == Some("Siosa"))
+            .unwrap();
         assert!(siosa.text.contains("{loc}The Library{/}"), "{}", siosa.text);
         assert!(!siosa.text.contains("Sarn"), "{}", siosa.text);
     }

@@ -2,10 +2,9 @@
 
 use poe_core::{
     apply_parsed, detect_running, load_catalog, load_character, load_regex_presets, load_settings,
-    note_current_zone, nudge_events, read_log_tail, refresh_generated_route, save_catalog, save_character,
-    sync_skipped,
-    save_regex_presets, save_settings,
-    vendor_gem_regex, visible_lines, AppState, CharacterFile, LogFollow, LogParser, ParsedLog,
+    note_current_zone, nudge_events, read_log_tail, refresh_generated_route, save_catalog,
+    save_character, save_regex_presets, save_settings, sync_skipped, vendor_gem_regex,
+    visible_lines, AppState, CharacterFile, LogFollow, LogParser, ParsedLog,
 };
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -57,7 +56,11 @@ fn main() {
 fn load_state() -> AppState {
     let mut settings = load_settings();
     let mut dirty_settings = false;
-    if settings.experience == poe_core::Experience::Advanced && !settings.tips && !settings.acts && !settings.gems {
+    if settings.experience == poe_core::Experience::Advanced
+        && !settings.tips
+        && !settings.acts
+        && !settings.gems
+    {
         settings.gems = true;
         dirty_settings = true;
     }
@@ -213,7 +216,11 @@ fn adopt_recent(app: &mut AppState, text: Option<&str>) {
     for line in text.lines() {
         match parser.push_line(line) {
             Some(ParsedLog::Entered { name, area_id }) => zone = Some((name, area_id)),
-            Some(ParsedLog::LevelUp { name, class_name, level: lvl }) => {
+            Some(ParsedLog::LevelUp {
+                name,
+                class_name,
+                level: lvl,
+            }) => {
                 level = Some((name, class_name, lvl));
             }
             _ => {}
@@ -237,9 +244,11 @@ fn adopt_recent(app: &mut AppState, text: Option<&str>) {
         }
     }
     if let Some((name, area_id)) = zone {
-        let act = area_id.as_ref().and_then(|id| app.catalog.area(id).map(|a| a.act));
+        let act = area_id
+            .as_ref()
+            .and_then(|id| app.catalog.area(id).map(|a| a.act));
         if let Some(character) = app.active_character_mut() {
-            note_current_zone(&mut character.progress, &name, area_id.as_deref(), act);
+            note_current_zone(character, &name, area_id.as_deref(), act);
             sync_skipped(character);
             app.dirty_characters = true;
         }
@@ -247,7 +256,12 @@ fn adopt_recent(app: &mut AppState, text: Option<&str>) {
 }
 
 fn apply_line(app: &mut AppState, parsed: ParsedLog) {
-    if let ParsedLog::LevelUp { name, class_name, level } = &parsed {
+    if let ParsedLog::LevelUp {
+        name,
+        class_name,
+        level,
+    } = &parsed
+    {
         let selected = app.settings.active_character.clone();
         match selected {
             Some(active) if !active.eq_ignore_ascii_case(name) => {
@@ -265,7 +279,10 @@ fn apply_line(app: &mut AppState, parsed: ParsedLog) {
             }
         }
     }
-    let area_act = if let ParsedLog::Entered { area_id: Some(id), .. } = &parsed {
+    let area_act = if let ParsedLog::Entered {
+        area_id: Some(id), ..
+    } = &parsed
+    {
         app.catalog.area(id).map(|a| a.act)
     } else {
         None
@@ -401,7 +418,9 @@ fn hotkeys(state: Arc<Mutex<AppState>>) {
 fn evdev_loop(state: Arc<Mutex<AppState>>) {
     let mut devices = Vec::new();
     for (_, device) in evdev::enumerate() {
-        let Some(keys) = device.supported_keys() else { continue };
+        let Some(keys) = device.supported_keys() else {
+            continue;
+        };
         if !keys.contains(evdev::KeyCode::KEY_LEFTCTRL) && !keys.contains(evdev::KeyCode::KEY_A) {
             continue;
         }
@@ -409,7 +428,9 @@ fn evdev_loop(state: Arc<Mutex<AppState>>) {
         devices.push(device);
     }
     if devices.is_empty() {
-        eprintln!("no keyboard devices could be opened; Ctrl+Alt+click needs the user in the input group");
+        eprintln!(
+            "no keyboard devices could be opened; Ctrl+Alt+click needs the user in the input group"
+        );
     }
     let mut held = vec![ModState::default(); devices.len()];
     let mut bound_config = String::new();
@@ -424,7 +445,9 @@ fn evdev_loop(state: Arc<Mutex<AppState>>) {
             bound_config = config_chord;
         }
         for (index, device) in devices.iter_mut().enumerate() {
-            let Ok(events) = device.fetch_events() else { continue };
+            let Ok(events) = device.fetch_events() else {
+                continue;
+            };
             for event in events {
                 if event.event_type() != evdev::EventType::KEY {
                     continue;
@@ -493,12 +516,20 @@ struct ModState {
 
 #[cfg(target_os = "linux")]
 fn combined_mods(states: &[ModState]) -> (bool, bool, bool) {
-    states.iter().fold((false, false, false), |(ctrl, alt, shift), state| {
-        (ctrl || state.ctrl, alt || state.alt, shift || state.shift)
-    })
+    states
+        .iter()
+        .fold((false, false, false), |(ctrl, alt, shift), state| {
+            (ctrl || state.ctrl, alt || state.alt, shift || state.shift)
+        })
 }
 
-fn matched_shortcut(app: &AppState, ctrl: bool, alt: bool, shift: bool, key: &str) -> Option<String> {
+fn matched_shortcut(
+    app: &AppState,
+    ctrl: bool,
+    alt: bool,
+    shift: bool,
+    key: &str,
+) -> Option<String> {
     let hotkeys = &app.settings.hotkeys;
     let builtins = [
         ("toggle", hotkeys.toggle_hud.as_str()),
@@ -506,6 +537,8 @@ fn matched_shortcut(app: &AppState, ctrl: bool, alt: bool, shift: bool, key: &st
         ("paste", hotkeys.paste_regex.as_str()),
         ("events_back", hotkeys.events_back.as_str()),
         ("events_forward", hotkeys.events_forward.as_str()),
+        ("group_back", hotkeys.group_back.as_str()),
+        ("group_forward", hotkeys.group_forward.as_str()),
     ];
     for (id, chord) in builtins {
         if chord_hit(&poe_core::parse_chord(chord), ctrl, alt, shift, key) {
@@ -516,7 +549,8 @@ fn matched_shortcut(app: &AppState, ctrl: bool, alt: bool, shift: bool, key: &st
         if cmd.text.is_empty() || cmd.hotkey.is_empty() {
             return None;
         }
-        chord_hit(&poe_core::parse_chord(&cmd.hotkey), ctrl, alt, shift, key).then(|| cmd.id.clone())
+        chord_hit(&poe_core::parse_chord(&cmd.hotkey), ctrl, alt, shift, key)
+            .then(|| cmd.id.clone())
     })
 }
 
@@ -540,6 +574,14 @@ fn apply_shortcut(app: &mut AppState, id: &str) -> bool {
             shift_events(app, 1);
             false
         }
+        "group_back" => {
+            shift_groups(app, -1);
+            false
+        }
+        "group_forward" => {
+            shift_groups(app, 1);
+            false
+        }
         other => {
             if let Some(cmd) = app.settings.hotkeys.chat.iter().find(|cmd| cmd.id == other) {
                 if !cmd.text.is_empty() {
@@ -559,8 +601,19 @@ fn shift_events(app: &mut AppState, delta: i32) {
     }
 }
 
+fn shift_groups(app: &mut AppState, delta: i32) {
+    if let Some(character) = app.active_character_mut() {
+        poe_core::nudge_groups(character, delta);
+        app.dirty_characters = true;
+    }
+}
+
 fn chord_hit(chord: &poe_core::Chord, ctrl: bool, alt: bool, shift: bool, key: &str) -> bool {
-    !chord.key.is_empty() && chord.ctrl == ctrl && chord.alt == alt && chord.shift == shift && chord.key == key
+    !chord.key.is_empty()
+        && chord.ctrl == ctrl
+        && chord.alt == alt
+        && chord.shift == shift
+        && chord.key == key
 }
 
 fn queue_chat(app: &mut AppState, text: &str) {
@@ -615,11 +668,34 @@ fn bind_portal(state: &Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     let shortcuts = {
         let app = state.lock().map_err(|_| anyhow::anyhow!("lock"))?;
         let mut shortcuts = vec![
-            ("toggle".to_string(), app.settings.hotkeys.toggle_hud.clone()),
-            ("config".to_string(), app.settings.hotkeys.open_config.clone()),
-            ("paste".to_string(), app.settings.hotkeys.paste_regex.clone()),
-            ("events_back".to_string(), app.settings.hotkeys.events_back.clone()),
-            ("events_forward".to_string(), app.settings.hotkeys.events_forward.clone()),
+            (
+                "toggle".to_string(),
+                app.settings.hotkeys.toggle_hud.clone(),
+            ),
+            (
+                "config".to_string(),
+                app.settings.hotkeys.open_config.clone(),
+            ),
+            (
+                "paste".to_string(),
+                app.settings.hotkeys.paste_regex.clone(),
+            ),
+            (
+                "events_back".to_string(),
+                app.settings.hotkeys.events_back.clone(),
+            ),
+            (
+                "events_forward".to_string(),
+                app.settings.hotkeys.events_forward.clone(),
+            ),
+            (
+                "group_back".to_string(),
+                app.settings.hotkeys.group_back.clone(),
+            ),
+            (
+                "group_forward".to_string(),
+                app.settings.hotkeys.group_forward.clone(),
+            ),
         ];
         for cmd in &app.settings.hotkeys.chat {
             if cmd.hotkey.is_empty() || cmd.text.is_empty() {
@@ -631,11 +707,15 @@ fn bind_portal(state: &Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     };
     let state = Arc::clone(state);
     std::thread::spawn(move || {
-        let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build();
         let Ok(runtime) = runtime else { return };
         runtime.block_on(async move {
             if let Err(err) = portal_session(state, shortcuts).await {
-                eprintln!("global shortcuts portal unavailable, using the keyboard device instead: {err}");
+                eprintln!(
+                    "global shortcuts portal unavailable, using the keyboard device instead: {err}"
+                );
             }
         });
     });
@@ -643,7 +723,10 @@ fn bind_portal(state: &Arc<Mutex<AppState>>) -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-async fn portal_session(state: Arc<Mutex<AppState>>, shortcuts: Vec<(String, String)>) -> anyhow::Result<()> {
+async fn portal_session(
+    state: Arc<Mutex<AppState>>,
+    shortcuts: Vec<(String, String)>,
+) -> anyhow::Result<()> {
     use ashpd::desktop::global_shortcuts::{GlobalShortcuts, NewShortcut};
     let proxy = GlobalShortcuts::new().await?;
     let session = proxy.create_session().await?;
@@ -671,4 +754,3 @@ async fn portal_session(state: Arc<Mutex<AppState>>, shortcuts: Vec<(String, Str
     }
     Ok(())
 }
-

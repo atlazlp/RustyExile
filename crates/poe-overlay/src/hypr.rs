@@ -31,9 +31,13 @@ pub struct Monitor {
 }
 
 pub fn command(request: &str) -> anyhow::Result<String> {
-    let sig = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").context("HYPRLAND_INSTANCE_SIGNATURE")?;
+    let sig =
+        std::env::var("HYPRLAND_INSTANCE_SIGNATURE").context("HYPRLAND_INSTANCE_SIGNATURE")?;
     let runtime = std::env::var("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR")?;
-    let path = PathBuf::from(runtime).join("hypr").join(sig).join(".socket.sock");
+    let path = PathBuf::from(runtime)
+        .join("hypr")
+        .join(sig)
+        .join(".socket.sock");
     let mut stream = UnixStream::connect(path)?;
     stream.set_read_timeout(Some(std::time::Duration::from_millis(300)))?;
     stream.set_write_timeout(Some(std::time::Duration::from_millis(300)))?;
@@ -47,9 +51,11 @@ pub fn command(request: &str) -> anyhow::Result<String> {
 pub fn game_window() -> Option<GameWindow> {
     let clients = command("j/clients").ok()?;
     let active = command("j/activewindow").ok().unwrap_or_default();
-    let active_addr = serde_json::from_str::<Value>(&active)
-        .ok()
-        .and_then(|v| v.get("address").and_then(|a| a.as_str()).map(|s| s.to_string()));
+    let active_addr = serde_json::from_str::<Value>(&active).ok().and_then(|v| {
+        v.get("address")
+            .and_then(|a| a.as_str())
+            .map(|s| s.to_string())
+    });
     let list: Vec<Value> = serde_json::from_str(&clients).ok()?;
     let mut best: Option<(u8, GameWindow)> = None;
     for client in list {
@@ -126,21 +132,32 @@ pub fn monitors() -> Vec<Monitor> {
                 y: m.get("y").and_then(|v| v.as_i64())? as i32,
                 w,
                 h,
-                name: m.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+                name: m
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string(),
             })
         })
         .collect()
 }
 
 pub fn logical_size(transform: i64, width: i32, height: i32) -> (i32, i32) {
-    if matches!(transform, 1 | 3 | 5 | 7) { (height, width) } else { (width, height) }
+    if matches!(transform, 1 | 3 | 5 | 7) {
+        (height, width)
+    } else {
+        (width, height)
+    }
 }
 
 static SCREENSHOT_UNTIL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn pause_for_screenshot() {
     let now = unix_millis();
-    SCREENSHOT_UNTIL.store(now.saturating_add(2_000), std::sync::atomic::Ordering::Relaxed);
+    SCREENSHOT_UNTIL.store(
+        now.saturating_add(2_000),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 pub fn screenshot_paused() -> bool {
@@ -159,7 +176,10 @@ pub fn capture_suppressed() -> bool {
         let now = unix_millis();
         let until = SCREENSHOT_UNTIL.load(std::sync::atomic::Ordering::Relaxed);
         if until < now.saturating_add(500) {
-            SCREENSHOT_UNTIL.store(now.saturating_add(500), std::sync::atomic::Ordering::Relaxed);
+            SCREENSHOT_UNTIL.store(
+                now.saturating_add(500),
+                std::sync::atomic::Ordering::Relaxed,
+            );
         }
     }
     true
@@ -184,7 +204,10 @@ fn picker_open() -> bool {
     if now < NEXT_CHECK.load(std::sync::atomic::Ordering::Relaxed) {
         return OPEN.load(std::sync::atomic::Ordering::Relaxed);
     }
-    NEXT_CHECK.store(now.saturating_add(200), std::sync::atomic::Ordering::Relaxed);
+    NEXT_CHECK.store(
+        now.saturating_add(200),
+        std::sync::atomic::Ordering::Relaxed,
+    );
     let open = command("j/layers")
         .map(|text| text.contains("solanum-area-picker"))
         .unwrap_or(false);
@@ -237,7 +260,9 @@ fn focus_game_now() -> anyhow::Result<String> {
     };
     let selector = selector_for(&window.address);
     if !selector.is_empty() {
-        let _ = command(&format!("dispatch hl.dsp.focus({{ window = \"{selector}\" }})"));
+        let _ = command(&format!(
+            "dispatch hl.dsp.focus({{ window = \"{selector}\" }})"
+        ));
     }
     Ok(selector)
 }
@@ -269,7 +294,9 @@ fn drop_clipboard_history(text: &str) {
         }
         std::thread::sleep(std::time::Duration::from_millis(80));
     }
-    let _ = std::process::Command::new("wl-copy").arg("--clear").status();
+    let _ = std::process::Command::new("wl-copy")
+        .arg("--clear")
+        .status();
 }
 
 fn delete_clipboard_entry(needle: &str) -> bool {
@@ -304,7 +331,9 @@ fn delete_clipboard_entry(needle: &str) -> bool {
 }
 
 fn clipboard_preview(line: &str) -> &str {
-    line.split_once('\t').map(|(_, preview)| preview).unwrap_or("")
+    line.split_once('\t')
+        .map(|(_, preview)| preview)
+        .unwrap_or("")
 }
 
 pub fn prepare_config_window() {
@@ -326,7 +355,8 @@ pub fn raise_config_window() {
             }
             std::thread::sleep(std::time::Duration::from_millis(40));
         }
-        if !config_window_mapped() || LIFT_GEN.load(std::sync::atomic::Ordering::Relaxed) != ticket {
+        if !config_window_mapped() || LIFT_GEN.load(std::sync::atomic::Ordering::Relaxed) != ticket
+        {
             return;
         }
         std::thread::sleep(std::time::Duration::from_millis(60));
@@ -382,7 +412,11 @@ fn present_config() {
         return;
     };
     let Some(game) = game_window() else {
-        let _ = command(&format!("eval {}; {}", float_request_body(&selector), pin_request_body(&selector)));
+        let _ = command(&format!(
+            "eval {}; {}",
+            float_request_body(&selector),
+            pin_request_body(&selector)
+        ));
         return;
     };
     let (width, height) = config_size().unwrap_or((1240, 820));
@@ -434,7 +468,14 @@ fn config_rect() -> Option<(i32, i32, i32, i32)> {
     })
 }
 
-fn place_inside(game_x: i32, game_y: i32, game_w: u32, game_h: u32, window_w: u32, window_h: u32) -> (i32, i32) {
+fn place_inside(
+    game_x: i32,
+    game_y: i32,
+    game_w: u32,
+    game_h: u32,
+    window_w: u32,
+    window_h: u32,
+) -> (i32, i32) {
     let game_w = game_w as i32;
     let game_h = game_h as i32;
     let window_w = window_w as i32;
@@ -460,11 +501,17 @@ fn focus_game() {
     if selector.is_empty() {
         return;
     }
-    let _ = command(&format!("dispatch hl.dsp.focus({{ window = \"{selector}\" }})"));
+    let _ = command(&format!(
+        "dispatch hl.dsp.focus({{ window = \"{selector}\" }})"
+    ));
 }
 
 fn restore_fullscreen(game: &FullscreenGame) {
-    let _ = command(&restore_fullscreen_request(&game.selector, game.internal, game.client_mode));
+    let _ = command(&restore_fullscreen_request(
+        &game.selector,
+        game.internal,
+        game.client_mode,
+    ));
 }
 
 fn ensure_config_window_rule() {
@@ -500,12 +547,21 @@ fn fullscreen_game() -> Option<FullscreenGame> {
         if !is_poe_window(class, title) {
             return None;
         }
-        let internal = client.get("fullscreen").and_then(|v| v.as_i64()).unwrap_or(0);
-        let client_mode = client.get("fullscreenClient").and_then(|v| v.as_i64()).unwrap_or(0);
+        let internal = client
+            .get("fullscreen")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
+        let client_mode = client
+            .get("fullscreenClient")
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0);
         if internal <= 0 && client_mode <= 0 {
             return None;
         }
-        let selector = client.get("address").and_then(|v| v.as_str()).and_then(safe_selector)?;
+        let selector = client
+            .get("address")
+            .and_then(|v| v.as_str())
+            .and_then(safe_selector)?;
         Some(FullscreenGame {
             selector,
             internal,
@@ -524,7 +580,11 @@ fn config_window_mapped() -> bool {
     list.into_iter().any(|client| {
         let class = client.get("class").and_then(|v| v.as_str()).unwrap_or("");
         let title = client.get("title").and_then(|v| v.as_str()).unwrap_or("");
-        (class == "RustyExile" || title == "RustyExile") && client.get("mapped").and_then(|v| v.as_bool()).unwrap_or(false)
+        (class == "RustyExile" || title == "RustyExile")
+            && client
+                .get("mapped")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
     })
 }
 
@@ -535,7 +595,10 @@ fn config_window_selector() -> Option<String> {
         let class = client.get("class").and_then(|v| v.as_str()).unwrap_or("");
         let title = client.get("title").and_then(|v| v.as_str()).unwrap_or("");
         if class == "RustyExile" || title == "RustyExile" {
-            client.get("address").and_then(|v| v.as_str()).and_then(safe_selector)
+            client
+                .get("address")
+                .and_then(|v| v.as_str())
+                .and_then(safe_selector)
         } else {
             None
         }
@@ -544,7 +607,11 @@ fn config_window_selector() -> Option<String> {
 
 #[cfg(test)]
 fn config_raise_requests(selector: &str) -> [String; 3] {
-    [float_request(selector), pin_request(selector), focus_request(selector)]
+    [
+        float_request(selector),
+        pin_request(selector),
+        focus_request(selector),
+    ]
 }
 
 #[cfg(test)]
@@ -584,7 +651,13 @@ fn move_to_position_body(selector: &str, x: i32, y: i32) -> String {
     format!("hl.dsp.window.move({{ x = {x}, y = {y}, relative = false, window = \"{selector}\" }})")
 }
 
-fn place_config_eval(selector: &str, monitor: Option<&str>, workspace: Option<&str>, x: i32, y: i32) -> String {
+fn place_config_eval(
+    selector: &str,
+    monitor: Option<&str>,
+    workspace: Option<&str>,
+    x: i32,
+    y: i32,
+) -> String {
     let mut steps = vec![float_request_body(selector)];
     if let Some(monitor) = monitor {
         steps.push(format!(
@@ -601,7 +674,11 @@ fn place_config_eval(selector: &str, monitor: Option<&str>, workspace: Option<&s
 }
 
 fn safe_monitor_name(name: &str) -> Option<String> {
-    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_')
+    {
         None
     } else {
         Some(name.to_string())
@@ -609,7 +686,11 @@ fn safe_monitor_name(name: &str) -> Option<String> {
 }
 
 fn safe_workspace(name: &str) -> Option<&str> {
-    if name.is_empty() || !name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':') {
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '-' || ch == '_' || ch == ':')
+    {
         None
     } else {
         Some(name)
@@ -635,7 +716,9 @@ pub fn sync_config_bind(previous: &str, next: &str) {
         steps.push(format!("hl.unbind(\"{old}\")"));
     }
     if let Some(accel) = hypr_accel(next) {
-        steps.push(format!("hl.bind(\"{accel}\", hl.dsp.global(\"RustyExile:config\"))"));
+        steps.push(format!(
+            "hl.bind(\"{accel}\", hl.dsp.global(\"RustyExile:config\"))"
+        ));
     }
     if steps.is_empty() {
         return;
@@ -721,7 +804,10 @@ fn is_poe_window(class: &str, title: &str) -> bool {
 fn poe_window_rank(class: &str, title: &str) -> Option<u8> {
     let class_l = class.to_ascii_lowercase();
     let title_l = title.to_ascii_lowercase();
-    if title_l.contains("path of exile 2") || class_l.contains("path of exile 2") || class_l.contains("pathofexile2") {
+    if title_l.contains("path of exile 2")
+        || class_l.contains("path of exile 2")
+        || class_l.contains("pathofexile2")
+    {
         return None;
     }
     if class_l.contains("steam_app_238960") || class_l.contains("pathofexile") {
@@ -748,15 +834,19 @@ mod tests {
 
     #[test]
     fn game_window_outranks_a_browser_tab() {
-        assert!(poe_window_rank("steam_app_238960", "Path of Exile").unwrap()
-            > poe_window_rank("firefox", "Path of Exile - poe-leveling").unwrap());
+        assert!(
+            poe_window_rank("steam_app_238960", "Path of Exile").unwrap()
+                > poe_window_rank("firefox", "Path of Exile - poe-leveling").unwrap()
+        );
         assert!(poe_window_rank("firefox", "YouTube").is_none());
     }
 
     #[test]
     fn config_raise_leaves_the_game_fullscreen() {
         let requests = config_raise_requests("address:0xabc");
-        assert!(requests.iter().all(|request| !request.contains("fullscreen")));
+        assert!(requests
+            .iter()
+            .all(|request| !request.contains("fullscreen")));
         assert!(requests[0].contains("float") && requests[0].contains("enable"));
         assert!(requests[1].contains("pin") && requests[1].contains("enable"));
         assert!(requests[2].contains("focus"));
@@ -768,7 +858,9 @@ mod tests {
         assert!(dismiss[0].contains("pin") && dismiss[0].contains("disable"));
         assert!(dismiss[1].contains("special:rustyexile"));
         assert!(dismiss[1].contains("follow = false"));
-        assert!(dismiss.iter().all(|request| !request.contains("fullscreen")));
+        assert!(dismiss
+            .iter()
+            .all(|request| !request.contains("fullscreen")));
         let (x, y) = place_inside(768, 0, 1920, 1080, 1240, 820);
         assert_eq!((x, y), (1108, 130));
         assert!(x >= 768 && x + 1240 <= 768 + 1920);
@@ -794,7 +886,10 @@ mod tests {
 
     #[test]
     fn config_hotkey_uses_hyprland_accelerator() {
-        assert_eq!(hypr_accel("ctrl+shift+o").as_deref(), Some("CTRL + SHIFT + O"));
+        assert_eq!(
+            hypr_accel("ctrl+shift+o").as_deref(),
+            Some("CTRL + SHIFT + O")
+        );
         assert_eq!(hypr_accel("ctrl+alt+h").as_deref(), Some("CTRL + ALT + H"));
     }
 

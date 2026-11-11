@@ -5,7 +5,9 @@ use poe_core::{visible_lines, AppState};
 use smithay_client_toolkit::compositor::{CompositorHandler, CompositorState};
 use smithay_client_toolkit::output::{OutputHandler, OutputState};
 use smithay_client_toolkit::reexports::client::globals::registry_queue_init;
-use smithay_client_toolkit::reexports::client::protocol::{wl_output, wl_pointer, wl_region, wl_seat, wl_shm, wl_surface};
+use smithay_client_toolkit::reexports::client::protocol::{
+    wl_output, wl_pointer, wl_region, wl_seat, wl_shm, wl_surface,
+};
 use smithay_client_toolkit::reexports::client::{Connection, Proxy, QueueHandle};
 use smithay_client_toolkit::registry::{ProvidesRegistryState, RegistryState};
 use smithay_client_toolkit::registry_handlers;
@@ -174,22 +176,28 @@ fn start_cache() -> Arc<Mutex<HudCache>> {
     let background = Arc::clone(&cache);
     std::thread::Builder::new()
         .name("poe-overlay-ipc".into())
-        .spawn(move || {
-            loop {
-                if hypr::screenshot_paused() {
-                    std::thread::sleep(Duration::from_millis(30));
-                    continue;
-                }
-                let window = hypr::game_window().filter(|window| window.w > 0 && window.h > 0);
-                let monitors = if window.is_some() { hypr::monitors() } else { Vec::new() };
-                let cursor = if window.is_some() { hypr::cursor() } else { None };
-                if let Ok(mut slot) = background.lock() {
-                    slot.window = window;
-                    slot.monitors = monitors;
-                    slot.cursor = cursor;
-                }
-                std::thread::sleep(Duration::from_millis(200));
+        .spawn(move || loop {
+            if hypr::screenshot_paused() {
+                std::thread::sleep(Duration::from_millis(30));
+                continue;
             }
+            let window = hypr::game_window().filter(|window| window.w > 0 && window.h > 0);
+            let monitors = if window.is_some() {
+                hypr::monitors()
+            } else {
+                Vec::new()
+            };
+            let cursor = if window.is_some() {
+                hypr::cursor()
+            } else {
+                None
+            };
+            if let Ok(mut slot) = background.lock() {
+                slot.window = window;
+                slot.monitors = monitors;
+                slot.cursor = cursor;
+            }
+            std::thread::sleep(Duration::from_millis(200));
         })
         .ok();
     cache
@@ -200,7 +208,8 @@ impl Overlay {
         let Some(drag) = self.drag.as_ref() else {
             return;
         };
-        let (origin_x, origin_y, cursor_x, cursor_y) = (drag.origin_x, drag.origin_y, drag.cursor_x, drag.cursor_y);
+        let (origin_x, origin_y, cursor_x, cursor_y) =
+            (drag.origin_x, drag.origin_y, drag.cursor_x, drag.cursor_y);
         let limit = self.panel_limit;
         let Some((cx, cy)) = hypr::cursor() else {
             return;
@@ -234,21 +243,33 @@ impl Overlay {
     }
 
     fn press_panel(&mut self, x: i32, y: i32) {
-        let placing = self.shared.lock().map(|shared| shared.hud_placing).unwrap_or(false);
+        let placing = self
+            .shared
+            .lock()
+            .map(|shared| shared.hud_placing)
+            .unwrap_or(false);
         if placing {
             let confirm = self.hits.iter().any(|hit| {
-                hit.id == "confirm" && x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h
+                hit.id == "confirm"
+                    && x >= hit.x
+                    && y >= hit.y
+                    && x < hit.x + hit.w
+                    && y < hit.y + hit.h
             });
             if confirm {
                 self.confirm_place();
                 return;
             }
-            let (ox, oy) = self.shared.lock().map(|shared| {
-                (
-                    shared.settings.custom_x.unwrap_or(self.panel_origin.0),
-                    shared.settings.custom_y.unwrap_or(self.panel_origin.1),
-                )
-            }).unwrap_or(self.panel_origin);
+            let (ox, oy) = self
+                .shared
+                .lock()
+                .map(|shared| {
+                    (
+                        shared.settings.custom_x.unwrap_or(self.panel_origin.0),
+                        shared.settings.custom_y.unwrap_or(self.panel_origin.1),
+                    )
+                })
+                .unwrap_or(self.panel_origin);
             if let Ok(mut shared) = self.shared.lock() {
                 shared.settings.custom_x = Some(ox);
                 shared.settings.custom_y = Some(oy);
@@ -262,11 +283,14 @@ impl Overlay {
             });
             return;
         }
-        let hit = self.hits.iter().find(|hit| {
-            x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h
-        });
+        let hit = self
+            .hits
+            .iter()
+            .find(|hit| x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h);
         let Some(hit) = hit else { return };
-        let Ok(mut shared) = self.shared.lock() else { return };
+        let Ok(mut shared) = self.shared.lock() else {
+            return;
+        };
         if shared.ctrl_down && shared.alt_down {
             if let Some(character) = shared.active_character_mut() {
                 poe_core::force_complete(&mut character.progress, &hit.id);
@@ -286,7 +310,9 @@ impl Overlay {
                 return;
             };
             HudSnap {
-                enabled: shared.running.is_some() && shared.hud_enabled && shared.settings.experience_chosen,
+                enabled: shared.running.is_some()
+                    && shared.hud_enabled
+                    && shared.settings.experience_chosen,
                 opacity: shared.settings.opacity,
                 scale: shared.settings.scale,
                 corner: shared.settings.corner,
@@ -351,7 +377,12 @@ impl Overlay {
             custom.map(|(x, _)| x).unwrap_or(-1),
             custom.map(|(_, y)| y).unwrap_or(-1)
         );
-        let line_sig = snap.lines.iter().map(|l| l.event_id.clone()).collect::<Vec<_>>().join("|");
+        let line_sig = snap
+            .lines
+            .iter()
+            .map(|l| l.event_id.clone())
+            .collect::<Vec<_>>()
+            .join("|");
         let full_sig = format!("{sig}|{}|{line_sig}", snap.capture);
         let Some(output) = pick_output(&self.output_state, &window, &monitors) else {
             self.unmap();
@@ -383,7 +414,14 @@ impl Overlay {
             let [px, py, pw, ph] = frame.panel;
             self.panel_origin = (px, py);
             self.panel_limit = ((window.w as i32 - pw).max(0), (window.h as i32 - ph).max(0));
-            self.ensure_layer(qh, &output, window.x - ox + px, window.y - oy + py, pw.max(1) as u32, ph.max(1) as u32);
+            self.ensure_layer(
+                qh,
+                &output,
+                window.x - ox + px,
+                window.y - oy + py,
+                pw.max(1) as u32,
+                ph.max(1) as u32,
+            );
             self.pending = Some(PendingPaint {
                 width: frame.width,
                 height: frame.height,
@@ -515,7 +553,13 @@ impl Overlay {
         self.attach(&layer, qh, &paint, false);
     }
 
-    fn attach(&mut self, layer: &LayerSurface, qh: &QueueHandle<Self>, paint: &PendingPaint, input: bool) {
+    fn attach(
+        &mut self,
+        layer: &LayerSurface,
+        qh: &QueueHandle<Self>,
+        paint: &PendingPaint,
+        input: bool,
+    ) {
         let stride = paint.width as i32 * 4;
         let Ok((buffer, canvas)) = self.pool.create_buffer(
             paint.width as i32,
@@ -529,7 +573,13 @@ impl Overlay {
         canvas[..copy].copy_from_slice(&paint.bgra[..copy]);
         let surface = layer.wl_surface().clone();
         if input {
-            set_input_region(&self.compositor, qh, &surface, &paint.hits, paint.interactive);
+            set_input_region(
+                &self.compositor,
+                qh,
+                &surface,
+                &paint.hits,
+                paint.interactive,
+            );
         }
         surface.damage_buffer(0, 0, paint.width as i32, paint.height as i32);
         let _ = buffer.attach_to(&surface);
@@ -560,14 +610,22 @@ fn place_layer(layer: &LayerSurface, x: i32, y: i32, width: u32, height: u32) {
 }
 
 fn monitor_origin(window: &GameWindow, monitors: &[Monitor]) -> Option<(i32, i32)> {
-    let monitor = monitors.iter().find(|monitor| monitor.id == window.monitor).or_else(|| {
-        monitors.iter().find(|monitor| contains_window(window, monitor))
-    })?;
+    let monitor = monitors
+        .iter()
+        .find(|monitor| monitor.id == window.monitor)
+        .or_else(|| {
+            monitors
+                .iter()
+                .find(|monitor| contains_window(window, monitor))
+        })?;
     Some((monitor.x, monitor.y))
 }
 
 fn contains_window(window: &GameWindow, monitor: &Monitor) -> bool {
-    window.x >= monitor.x && window.y >= monitor.y && window.x < monitor.x + monitor.w && window.y < monitor.y + monitor.h
+    window.x >= monitor.x
+        && window.y >= monitor.y
+        && window.x < monitor.x + monitor.w
+        && window.y < monitor.y + monitor.h
 }
 
 fn near_top_center(window: &GameWindow, x: i32, y: i32) -> bool {
@@ -576,13 +634,23 @@ fn near_top_center(window: &GameWindow, x: i32, y: i32) -> bool {
     (x - cx).abs() < 90 && (y - top).abs() < 48 && y >= top - 8
 }
 
-fn pick_output(outputs: &OutputState, window: &GameWindow, monitors: &[Monitor]) -> Option<wl_output::WlOutput> {
+fn pick_output(
+    outputs: &OutputState,
+    window: &GameWindow,
+    monitors: &[Monitor],
+) -> Option<wl_output::WlOutput> {
     let monitor = monitors
         .iter()
         .find(|monitor| monitor.id == window.monitor)
-        .or_else(|| monitors.iter().find(|monitor| contains_window(window, monitor)))?;
+        .or_else(|| {
+            monitors
+                .iter()
+                .find(|monitor| contains_window(window, monitor))
+        })?;
     for output in outputs.outputs() {
-        let Some(info) = outputs.info(&output) else { continue };
+        let Some(info) = outputs.info(&output) else {
+            continue;
+        };
         if info.name.as_deref() == Some(monitor.name.as_str()) {
             return Some(output);
         }
@@ -595,7 +663,14 @@ fn pick_output(outputs: &OutputState, window: &GameWindow, monitors: &[Monitor])
 }
 
 impl CompositorHandler for Overlay {
-    fn scale_factor_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: i32) {}
+    fn scale_factor_changed(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: i32,
+    ) {
+    }
     fn transform_changed(
         &mut self,
         _: &Connection,
@@ -605,8 +680,22 @@ impl CompositorHandler for Overlay {
     ) {
     }
     fn frame(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: u32) {}
-    fn surface_enter(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
-    fn surface_leave(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wl_surface::WlSurface, _: &wl_output::WlOutput) {}
+    fn surface_enter(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
+    fn surface_leave(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: &wl_surface::WlSurface,
+        _: &wl_output::WlOutput,
+    ) {
+    }
 }
 
 impl OutputHandler for Overlay {
@@ -651,12 +740,24 @@ impl SeatHandler for Overlay {
         &mut self.seat_state
     }
     fn new_seat(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat) {}
-    fn new_capability(&mut self, _: &Connection, qh: &QueueHandle<Self>, seat: wl_seat::WlSeat, capability: Capability) {
+    fn new_capability(
+        &mut self,
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
         if capability == Capability::Pointer && self.pointer.is_none() {
             self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
         }
     }
-    fn remove_capability(&mut self, _: &Connection, _: &QueueHandle<Self>, _: wl_seat::WlSeat, capability: Capability) {
+    fn remove_capability(
+        &mut self,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+        _: wl_seat::WlSeat,
+        capability: Capability,
+    ) {
         if capability == Capability::Pointer {
             if let Some(pointer) = self.pointer.take() {
                 pointer.release();

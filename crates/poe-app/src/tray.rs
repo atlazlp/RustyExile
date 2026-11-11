@@ -57,7 +57,11 @@ pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         poe_data::tray_icon_argb(32).unwrap_or((32, 32, vec![255, 212, 164, 84].repeat(32 * 32)));
     let tray = RustyTray {
         state,
-        icon: ksni::Icon { width, height, data },
+        icon: ksni::Icon {
+            width,
+            height,
+            data,
+        },
     };
     let _handle = tray.spawn().map_err(|err| anyhow::anyhow!(err))?;
     std::thread::park();

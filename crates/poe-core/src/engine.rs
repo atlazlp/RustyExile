@@ -23,8 +23,8 @@ pub fn trigger_fired(trigger: &TriggerKind, progress: &CharacterProgress) -> boo
 
 fn frontier_index(route: &CharacterRoute, progress: &CharacterProgress) -> Option<usize> {
     let mut current = None;
-    for (index, group) in route.groups.iter().enumerate() {
-        if !group_passed(group, progress) {
+    for index in 0..route.groups.len() {
+        if !group_passed(route, index, progress) {
             break;
         }
         current = Some(index);
@@ -32,13 +32,39 @@ fn frontier_index(route: &CharacterRoute, progress: &CharacterProgress) -> Optio
     current
 }
 
-fn group_passed(group: &crate::model::EventGroup, progress: &CharacterProgress) -> bool {
-    progress.skipped_groups.iter().any(|id| id == &group.id)
-        || group.start.iter().any(|trigger| trigger_fired(trigger, progress))
+fn group_passed(route: &CharacterRoute, index: usize, progress: &CharacterProgress) -> bool {
+    let group = &route.groups[index];
+    if listed(&progress.skipped_groups, &group.id) || listed(&progress.cleared_groups, &group.id) {
+        return true;
+    }
+    let Some(key) = start_key(group) else {
+        return group
+            .start
+            .iter()
+            .any(|trigger| trigger_fired(trigger, progress));
+    };
+    let open = route.groups.iter().enumerate().find(|(_, candidate)| {
+        start_key(candidate).as_ref() == Some(&key)
+            && !listed(&progress.cleared_groups, &candidate.id)
+            && !listed(&progress.skipped_groups, &candidate.id)
+    });
+    open.is_some_and(|(open_index, _)| open_index == index)
+        && group
+            .start
+            .iter()
+            .any(|trigger| trigger_fired(trigger, progress))
+}
+
+fn listed(ids: &[String], id: &str) -> bool {
+    ids.iter().any(|candidate| candidate == id)
+}
+
+fn view_base(route: &CharacterRoute, progress: &CharacterProgress) -> Option<usize> {
+    anchor_index(route, progress).or_else(|| frontier_index(route, progress))
 }
 
 fn viewed_index(route: &CharacterRoute, progress: &CharacterProgress) -> Option<usize> {
-    let base = frontier_index(route, progress)?;
+    let base = view_base(route, progress)?;
     if route.groups.is_empty() {
         return None;
     }
@@ -47,7 +73,7 @@ fn viewed_index(route: &CharacterRoute, progress: &CharacterProgress) -> Option<
 }
 
 pub fn nudge_events(file: &mut CharacterFile, delta: i32) {
-    let Some(base) = frontier_index(&file.route, &file.progress) else {
+    let Some(base) = view_base(&file.route, &file.progress) else {
         return;
     };
     if file.route.groups.is_empty() {
@@ -56,6 +82,30 @@ pub fn nudge_events(file: &mut CharacterFile, delta: i32) {
     let max = file.route.groups.len() as i32 - 1;
     let next = (base as i32 + file.progress.view_delta + delta).clamp(0, max);
     file.progress.view_delta = next - base as i32;
+}
+
+pub fn nudge_groups(file: &mut CharacterFile, delta: i32) {
+    let Some(current) = viewed_index(&file.route, &file.progress) else {
+        return;
+    };
+    if file.route.groups.is_empty() {
+        return;
+    }
+    let max = file.route.groups.len() as i32 - 1;
+    let target = (current as i32 + delta).clamp(0, max) as usize;
+    let base = view_base(&file.route, &file.progress).unwrap_or(0);
+    if target > current {
+        for group in &file.route.groups[current..target] {
+            if !listed(&file.progress.cleared_groups, &group.id) {
+                file.progress.cleared_groups.push(group.id.clone());
+            }
+        }
+    } else if target < current {
+        for group in &file.route.groups[target..current] {
+            file.progress.cleared_groups.retain(|id| id != &group.id);
+        }
+    }
+    file.progress.view_delta = target as i32 - base as i32;
 }
 
 fn start_key(group: &crate::model::EventGroup) -> Option<String> {
@@ -76,7 +126,11 @@ fn furthest_reached(route: &CharacterRoute, progress: &CharacterProgress) -> Opt
         if !seen.insert(key) {
             continue;
         }
-        if group.start.iter().any(|trigger| trigger_fired(trigger, progress)) {
+        if group
+            .start
+            .iter()
+            .any(|trigger| trigger_fired(trigger, progress))
+        {
             furthest = Some(index);
         }
     }
@@ -85,26 +139,51 @@ fn furthest_reached(route: &CharacterRoute, progress: &CharacterProgress) -> Opt
 
 pub fn sync_skipped(file: &mut CharacterFile) {
     let route = &file.route;
-    let progress = &mut file.progress;
-    let still_skipped: Vec<String> = progress
+    let area_now = file.progress.area_id.clone();
+    let still_skipped: Vec<String> = file
+        .progress
         .skipped_groups
         .iter()
-        .filter(|id| match route.groups.iter().find(|group| &&group.id == id) {
-            Some(group) => !group.start.iter().any(|trigger| trigger_fired(trigger, progress)),
-            None => false,
+        .filter(|id| {
+            let Some((index, group)) = route
+                .groups
+                .iter()
+                .enumerate()
+                .find(|(_, group)| &&group.id == id)
+            else {
+                return false;
+            };
+            let Some(area) = zone_area(group) else {
+                return !group
+                    .start
+                    .iter()
+                    .any(|trigger| trigger_fired(trigger, &file.progress));
+            };
+            if area_now != area {
+                return true;
+            }
+            let first_skipped = route.groups.iter().enumerate().find(|(_, candidate)| {
+                zone_area(candidate) == Some(area)
+                    && file
+                        .progress
+                        .skipped_groups
+                        .iter()
+                        .any(|skipped| skipped == &candidate.id)
+            });
+            match first_skipped {
+                Some((skipped_index, _)) => skipped_index != index,
+                None => true,
+            }
         })
         .cloned()
         .collect();
-    progress.skipped_groups = still_skipped;
-    let Some(target) = furthest_reached(route, progress) else {
+    file.progress.skipped_groups = still_skipped;
+    let Some(target) = furthest_reached(route, &file.progress) else {
         return;
     };
     let mut gap = None;
-    for (index, group) in route.groups.iter().enumerate() {
-        if index >= target {
-            break;
-        }
-        if !group_passed(group, progress) {
+    for index in 0..target {
+        if !group_passed(route, index, &file.progress) {
             gap = Some(index);
             break;
         }
@@ -112,11 +191,125 @@ pub fn sync_skipped(file: &mut CharacterFile) {
     let Some(gap) = gap else {
         return;
     };
-    for group in &route.groups[gap..target] {
-        if group_passed(group, progress) {
+    for index in gap..target {
+        if group_passed(route, index, &file.progress) {
             continue;
         }
-        progress.skipped_groups.push(group.id.clone());
+        file.progress
+            .skipped_groups
+            .push(route.groups[index].id.clone());
+    }
+}
+
+fn zone_area(group: &crate::model::EventGroup) -> Option<&str> {
+    group.start.iter().find_map(|trigger| match trigger {
+        TriggerKind::ZoneEnter { area_id } => Some(area_id.as_str()),
+        _ => None,
+    })
+}
+
+fn anchor_index(route: &CharacterRoute, progress: &CharacterProgress) -> Option<usize> {
+    let id = progress.anchor_group.as_deref()?;
+    route.groups.iter().position(|group| group.id == id)
+}
+
+fn resolve_area_id(
+    route: &CharacterRoute,
+    progress: &CharacterProgress,
+    given: Option<&str>,
+    name: &str,
+) -> Option<String> {
+    if let Some(id) = given {
+        if route
+            .groups
+            .iter()
+            .any(|group| zone_area(group) == Some(id) && group.name.eq_ignore_ascii_case(name))
+        {
+            return Some(id.to_string());
+        }
+        let trimmed = id.trim_end_matches('_');
+        if let Some(group) = route.groups.iter().find(|group| {
+            zone_area(group).is_some_and(|area| area.trim_end_matches('_') == trimmed)
+                && group.name.eq_ignore_ascii_case(name)
+        }) {
+            return zone_area(group).map(|area| area.to_string());
+        }
+    }
+    let anchor = anchor_index(route, progress)
+        .or_else(|| frontier_index(route, progress))
+        .unwrap_or(0);
+    let matches: Vec<usize> = route
+        .groups
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| group.name.eq_ignore_ascii_case(name) && zone_area(group).is_some())
+        .map(|(index, _)| index)
+        .collect();
+    let index = matches
+        .iter()
+        .copied()
+        .find(|index| *index >= anchor)
+        .or_else(|| matches.last().copied())?;
+    zone_area(&route.groups[index]).map(|area| area.to_string())
+}
+
+fn claim_zone(file: &mut CharacterFile, area_id: &str) {
+    let slots: Vec<usize> = file
+        .route
+        .groups
+        .iter()
+        .enumerate()
+        .filter(|(_, group)| zone_area(group) == Some(area_id))
+        .map(|(index, _)| index)
+        .collect();
+    if slots.is_empty() {
+        return;
+    }
+    let anchor = anchor_index(&file.route, &file.progress);
+    let shortcut_at = |index: usize, file: &CharacterFile| {
+        listed(&file.progress.cleared_groups, &file.route.groups[index].id)
+    };
+    let skipped_at = |index: usize, file: &CharacterFile| {
+        listed(&file.progress.skipped_groups, &file.route.groups[index].id)
+    };
+    if let Some(hit) = slots
+        .iter()
+        .copied()
+        .find(|index| skipped_at(*index, file) && !shortcut_at(*index, file))
+    {
+        let id = file.route.groups[hit].id.clone();
+        file.progress
+            .skipped_groups
+            .retain(|skipped_id| skipped_id != &id);
+        file.progress.anchor_group = Some(id);
+        return;
+    }
+    let progress_consumed = |index: usize| anchor.is_some_and(|current| index < current);
+    let candidate = slots
+        .iter()
+        .copied()
+        .find(|index| !shortcut_at(*index, file) && !progress_consumed(*index));
+    let Some(candidate) = candidate else {
+        return;
+    };
+    let Some(anchor) = anchor else {
+        file.progress.anchor_group = Some(file.route.groups[candidate].id.clone());
+        return;
+    };
+    if candidate <= anchor {
+        return;
+    }
+    let between_clear =
+        (anchor + 1..candidate).all(|index| group_passed(&file.route, index, &file.progress));
+    let earlier: Vec<usize> = slots
+        .iter()
+        .copied()
+        .filter(|index| *index < candidate)
+        .collect();
+    let earlier_shortcut =
+        !earlier.is_empty() && earlier.iter().all(|index| shortcut_at(*index, file));
+    if between_clear || earlier_shortcut || slots.first().copied() == Some(candidate) {
+        file.progress.anchor_group = Some(file.route.groups[candidate].id.clone());
     }
 }
 
@@ -187,7 +380,9 @@ pub fn visible_lines(
         let lilly: Vec<_> = route
             .events
             .iter()
-            .filter(|event| event.id.starts_with("gem-lilly-") && !progress.completed.contains(&event.id))
+            .filter(|event| {
+                event.id.starts_with("gem-lilly-") && !progress.completed.contains(&event.id)
+            })
             .filter(|_| progress.area_id == "2_6_town" && progress.entered_areas.contains("2_6_1"))
             .cloned()
             .collect();
@@ -198,12 +393,18 @@ pub fn visible_lines(
         let trials: Vec<_> = route
             .events
             .iter()
-            .filter(|event| event.id.starts_with("gem-trial-") && !progress.completed.contains(&event.id))
+            .filter(|event| {
+                event.id.starts_with("gem-trial-") && !progress.completed.contains(&event.id)
+            })
             .filter(|_| progress.trial_gems)
             .cloned()
             .collect();
         if !trials.is_empty() {
-            lines.push(title_line("trial", "Aspirant's Trial", progress.highest_act));
+            lines.push(title_line(
+                "trial",
+                "Aspirant's Trial",
+                progress.highest_act,
+            ));
             lines.extend(trials.iter().map(|event| line_from(event, false)));
         }
     }
@@ -222,8 +423,12 @@ fn shown(event: &CampaignEvent, show_acts: bool, show_gems: bool) -> bool {
 }
 
 fn is_zone_enter(event: &CampaignEvent, group: &crate::model::EventGroup) -> bool {
-    event.kind == EventKind::Step
-        && crate::plain_text(&event.text).eq_ignore_ascii_case(&format!("Enter {}", group.name))
+    if event.kind != EventKind::Step {
+        return false;
+    }
+    let plain = crate::plain_text(&event.text);
+    plain.eq_ignore_ascii_case(&format!("Enter {}", group.name))
+        || plain.eq_ignore_ascii_case(&format!("Waypoint to {}", group.name))
 }
 
 fn title_line(id: &str, name: &str, act: u8) -> VisibleLine {
@@ -245,7 +450,11 @@ fn line_from(event: &CampaignEvent, show_tips: bool) -> VisibleLine {
         event_id: event.id.clone(),
         group_name: None,
         text: event.text.clone(),
-        detail: if show_tips { event.detail.clone() } else { String::new() },
+        detail: if show_tips {
+            event.detail.clone()
+        } else {
+            String::new()
+        },
         icon: event.icon.clone(),
         gem_name: event.gem_name.clone(),
         act: event.act,
@@ -266,28 +475,36 @@ pub fn note_zone_kind(progress: &mut CharacterProgress, name: &str, area_id: &st
     }
 }
 
+fn arrive(file: &mut CharacterFile, name: &str, given: Option<&str>, act: Option<u8>) -> bool {
+    let resolved = resolve_area_id(&file.route, &file.progress, given, name);
+    let area_key = resolved
+        .clone()
+        .unwrap_or_else(|| given.unwrap_or("").to_string());
+    if file.progress.zone_name == name && file.progress.area_id == area_key {
+        return false;
+    }
+    file.progress.zone_name = name.to_string();
+    file.progress.entered_names.insert(name.to_string());
+    if !area_key.is_empty() {
+        file.progress.area_id = area_key.clone();
+        file.progress.entered_areas.insert(area_key.clone());
+    }
+    if let Some(act) = act {
+        file.progress.highest_act = file.progress.highest_act.max(act);
+    }
+    file.progress.view_delta = 0;
+    if !area_key.is_empty() {
+        claim_zone(file, &area_key);
+    }
+    sync_skipped(file);
+    let area_now = file.progress.area_id.clone();
+    note_zone_kind(&mut file.progress, name, &area_now);
+    true
+}
+
 pub fn apply_parsed(file: &mut CharacterFile, parsed: &ParsedLog, area_act: Option<u8>) -> bool {
     match parsed {
-        ParsedLog::Entered { name, area_id } => {
-            if file.progress.zone_name == *name
-                && file.progress.area_id == area_id.clone().unwrap_or_default()
-            {
-                return false;
-            }
-            file.progress.zone_name = name.clone();
-            file.progress.entered_names.insert(name.clone());
-            if let Some(id) = area_id {
-                file.progress.area_id = id.clone();
-                file.progress.entered_areas.insert(id.clone());
-            }
-            if let Some(act) = area_act {
-                file.progress.highest_act = file.progress.highest_act.max(act);
-            }
-            file.progress.view_delta = 0;
-            sync_skipped(file);
-            note_zone_kind(&mut file.progress, name, area_id.as_deref().unwrap_or(""));
-            true
-        }
+        ParsedLog::Entered { name, area_id } => arrive(file, name, area_id.as_deref(), area_act),
         ParsedLog::LevelUp {
             name,
             class_name,
@@ -310,17 +527,13 @@ pub fn apply_parsed(file: &mut CharacterFile, parsed: &ParsedLog, area_act: Opti
     }
 }
 
-pub fn note_current_zone(progress: &mut CharacterProgress, name: &str, area_id: Option<&str>, act: Option<u8>) {
-    progress.zone_name = name.to_string();
-    progress.entered_names.insert(name.to_string());
-    if let Some(id) = area_id {
-        progress.area_id = id.to_string();
-        progress.entered_areas.insert(id.to_string());
-    }
-    if let Some(act) = act {
-        progress.highest_act = progress.highest_act.max(act);
-    }
-    note_zone_kind(progress, name, area_id.unwrap_or(""));
+pub fn note_current_zone(
+    file: &mut CharacterFile,
+    name: &str,
+    area_id: Option<&str>,
+    act: Option<u8>,
+) {
+    let _ = arrive(file, name, area_id, act);
 }
 
 pub fn force_complete(progress: &mut CharacterProgress, event_id: &str) {
@@ -407,15 +620,21 @@ mod tests {
         route.groups.push(group("g-town", "1_1_town", &["gate"]));
         route.groups.push(group("g-coast", "1_1_2", &["coast"]));
         route.groups.push(group("g-mud", "1_1_3", &["mud"]));
-        route.groups.push(group("g-return", "1_1_town", &["dweller"]));
+        route
+            .groups
+            .push(group("g-return", "1_1_town", &["dweller"]));
         route.events.push(step("mud", "1_1_3", "1_1_4_1"));
         let mut progress = CharacterProgress::default();
         progress.entered_areas.insert("1_1_town".into());
         progress.entered_areas.insert("1_1_2".into());
         let lines = visible_lines(&route, &progress, true, true, false);
-        assert!(lines.iter().any(|line| line.event_id == "coast" && !line.is_header));
+        assert!(lines
+            .iter()
+            .any(|line| line.event_id == "coast" && !line.is_header));
         assert!(lines.iter().any(|line| line.event_id == "mud"));
-        assert!(!lines.iter().any(|line| line.event_id == "gate" || line.event_id == "dweller"));
+        assert!(!lines
+            .iter()
+            .any(|line| line.event_id == "gate" || line.event_id == "dweller"));
         assert!(lines.iter().any(|line| line.is_header));
     }
 
@@ -443,12 +662,18 @@ mod tests {
         apply_parsed(&mut file, &enter("The Ledge", "1_1_5"), Some(1));
         assert_eq!(file.progress.skipped_groups, vec!["g-flood".to_string()]);
         let lines = visible_lines(&file.route, &file.progress, true, true, false);
-        assert!(lines.iter().any(|line| line.is_header && line.text == "The Ledge"));
-        assert!(!lines.iter().any(|line| line.event_id == "tidal" || line.event_id == "flood"));
+        assert!(lines
+            .iter()
+            .any(|line| line.is_header && line.text == "The Ledge"));
+        assert!(!lines
+            .iter()
+            .any(|line| line.event_id == "tidal" || line.event_id == "flood"));
         apply_parsed(&mut file, &enter("Lioneye's Watch", "1_1_town"), Some(1));
         assert_eq!(file.progress.skipped_groups, vec!["g-flood".to_string()]);
         let lines = visible_lines(&file.route, &file.progress, true, true, false);
-        assert!(lines.iter().any(|line| line.is_header && line.text == "The Ledge"));
+        assert!(lines
+            .iter()
+            .any(|line| line.is_header && line.text == "The Ledge"));
         apply_parsed(&mut file, &enter("The Flooded Depths", "1_1_4_0"), Some(1));
         assert!(file.progress.skipped_groups.is_empty());
     }
@@ -491,16 +716,22 @@ mod tests {
         glyph.text = "Find 3xGlyph".into();
         route.events.extend([coast, enter, glyph]);
         route.groups.push(group("g-coast", "1_1_2", &["coast"]));
-        route.groups.push(group("g-mud", "1_1_3", &["enter-mud", "glyph"]));
+        route
+            .groups
+            .push(group("g-mud", "1_1_3", &["enter-mud", "glyph"]));
         route.groups[1].name = "The Mud Flats".into();
         let mut progress = CharacterProgress::default();
         progress.entered_areas.insert("1_1_2".into());
         let lines = visible_lines(&route, &progress, true, true, false);
-        assert!(lines.iter().any(|line| line.text == "Enter {loc}The Mud Flats{/}"));
+        assert!(lines
+            .iter()
+            .any(|line| line.text == "Enter {loc}The Mud Flats{/}"));
         progress.entered_areas.insert("1_1_3".into());
         let lines = visible_lines(&route, &progress, true, true, false);
         assert!(lines.iter().any(|line| line.text == "Find 3xGlyph"));
-        assert!(lines.iter().any(|line| line.is_header && line.text == "The Mud Flats"));
+        assert!(lines
+            .iter()
+            .any(|line| line.is_header && line.text == "The Mud Flats"));
         assert!(!lines.iter().any(|line| line.event_id == "enter-mud"));
     }
 
@@ -508,6 +739,115 @@ mod tests {
         ParsedLog::Entered {
             name: name.into(),
             area_id: Some(area.into()),
+        }
+    }
+
+    #[test]
+    fn repeated_zone_follows_visit_order() {
+        let mut route = CharacterRoute::default();
+        route.events.push(step("chamber-go", "1_2_3", "1_2_6_1"));
+        route.events.push(step("fell-go", "1_2_3", "1_2_15"));
+        route
+            .groups
+            .push(group("g-cross-1", "1_2_3", &["chamber-go"]));
+        route
+            .groups
+            .push(group("g-chamber", "1_2_6_1", &["chamber"]));
+        route.groups.push(group("g-cross-2", "1_2_3", &["fell-go"]));
+        route.groups[0].name = "The Crossroads".into();
+        route.groups[2].name = "The Crossroads".into();
+        let mut file = character(route);
+        apply_parsed(&mut file, &enter("The Crossroads", "1_2_3"), Some(2));
+        let lines = visible_lines(&file.route, &file.progress, true, false, false);
+        assert!(lines.iter().any(|line| line.event_id == "chamber-go"));
+        assert!(!lines.iter().any(|line| line.event_id == "fell-go"));
+        apply_parsed(
+            &mut file,
+            &enter("The Chamber of Sins Level 1", "1_2_6_1"),
+            Some(2),
+        );
+        apply_parsed(&mut file, &enter("The Crossroads", "1_2_3"), Some(2));
+        let lines = visible_lines(&file.route, &file.progress, true, false, false);
+        assert!(lines.iter().any(|line| line.event_id == "fell-go"));
+        assert!(!lines.iter().any(|line| line.event_id == "chamber-go"));
+    }
+
+    #[test]
+    fn group_shortcut_clears_without_skipping_and_zone_entry_cancels_the_scroll() {
+        let mut route = CharacterRoute::default();
+        route.events.push(step("chamber-go", "1_2_3", "1_2_6_1"));
+        route.events.push(step("fell-go", "1_2_3", "1_2_15"));
+        route
+            .groups
+            .push(group("g-cross-1", "1_2_3", &["chamber-go"]));
+        route
+            .groups
+            .push(group("g-chamber", "1_2_6_1", &["chamber"]));
+        route.groups.push(group("g-cross-2", "1_2_3", &["fell-go"]));
+        let mut file = character(route);
+        apply_parsed(&mut file, &enter("The Crossroads", "1_2_3"), Some(2));
+        nudge_groups(&mut file, 1);
+        assert_eq!(file.progress.cleared_groups, vec!["g-cross-1".to_string()]);
+        assert!(file.progress.skipped_groups.is_empty());
+        assert_ne!(file.progress.view_delta, 0);
+        nudge_groups(&mut file, -1);
+        assert!(file.progress.cleared_groups.is_empty());
+        nudge_groups(&mut file, 1);
+        apply_parsed(
+            &mut file,
+            &enter("The Forest Encampment", "1_2_town"),
+            Some(2),
+        );
+        assert_eq!(file.progress.view_delta, 0);
+        apply_parsed(&mut file, &enter("The Crossroads", "1_2_3"), Some(2));
+        let lines = visible_lines(&file.route, &file.progress, true, false, false);
+        assert!(lines.iter().any(|line| line.event_id == "fell-go"));
+        assert!(file.progress.skipped_groups.is_empty());
+    }
+
+    #[test]
+    fn entered_name_resolves_the_area_when_the_log_id_is_missing() {
+        let mut route = CharacterRoute::default();
+        route.events.push(step("river", "1_2_7", "1_2_9"));
+        route.events.push(step("forest", "1_2_9", "1_2_10"));
+        route.groups.push(group("g-river", "1_2_7", &["river"]));
+        route.groups.push(group("g-forest", "1_2_9", &["forest"]));
+        route.groups[0].name = "The Riverways".into();
+        route.groups[1].name = "The Western Forest".into();
+        let mut file = character(route);
+        apply_parsed(&mut file, &enter("The Riverways", "1_2_7"), Some(2));
+        apply_parsed(
+            &mut file,
+            &ParsedLog::Entered {
+                name: "The Western Forest".into(),
+                area_id: None,
+            },
+            Some(2),
+        );
+        assert_eq!(file.progress.area_id, "1_2_9");
+        let lines = visible_lines(&file.route, &file.progress, true, false, false);
+        assert!(lines
+            .iter()
+            .any(|line| line.is_header && line.text == "The Western Forest"));
+        apply_parsed(&mut file, &enter("The Riverways", "1_2_7"), Some(2));
+        apply_parsed(
+            &mut file,
+            &ParsedLog::Entered {
+                name: "The Western Forest".into(),
+                area_id: Some("1_2_7".into()),
+            },
+            Some(2),
+        );
+        assert_eq!(file.progress.area_id, "1_2_9");
+    }
+
+    fn character(route: CharacterRoute) -> CharacterFile {
+        CharacterFile {
+            name: "Test".into(),
+            class_name: "Scion".into(),
+            route,
+            progress: CharacterProgress::default(),
+            user_edited: false,
         }
     }
 

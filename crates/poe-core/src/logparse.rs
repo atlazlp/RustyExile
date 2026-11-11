@@ -1,13 +1,19 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LogEvent {
-    Generating { area_id: String },
-    Entered { name: String },
+    Generating {
+        area_id: String,
+    },
+    Entered {
+        name: String,
+    },
     LevelUp {
         name: String,
         class_name: String,
         level: u32,
     },
-    Slain { name: String },
+    Slain {
+        name: String,
+    },
     Passive {
         id: String,
         name: String,
@@ -17,14 +23,22 @@ pub enum LogEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedLog {
-    Entered { name: String, area_id: Option<String> },
+    Entered {
+        name: String,
+        area_id: Option<String>,
+    },
     LevelUp {
         name: String,
         class_name: String,
         level: u32,
     },
-    Slain { name: String },
-    Passive { id: String, name: String },
+    Slain {
+        name: String,
+    },
+    Passive {
+        id: String,
+        name: String,
+    },
     Connected,
 }
 
@@ -65,8 +79,8 @@ impl LogParser {
 }
 
 pub fn parse_line(line: &str) -> Option<LogEvent> {
-    if let Some(id) = between(line, "Generating level ", " area \"")
-        .and_then(|_| between(line, " area \"", "\""))
+    if let Some(id) =
+        between(line, "Generating level ", " area \"").and_then(|_| between(line, " area \"", "\""))
     {
         return Some(LogEvent::Generating {
             area_id: id.to_string(),
@@ -103,7 +117,9 @@ pub fn parse_line(line: &str) -> Option<LogEvent> {
         }
         if let Some(name) = rest.strip_suffix(" has been slain.") {
             let name = name.trim();
-            if !name.is_empty() && !name.contains(' ') || name.chars().any(|c| c == '_') || !name.contains(':')
+            if !name.is_empty() && !name.contains(' ')
+                || name.chars().any(|c| c == '_')
+                || !name.contains(':')
             {
                 if !name.contains(':') {
                     return Some(LogEvent::Slain {
@@ -113,7 +129,10 @@ pub fn parse_line(line: &str) -> Option<LogEvent> {
             }
         }
     }
-    if let Some(rest) = line.split("Successfully allocated passive skill id: ").nth(1) {
+    if let Some(rest) = line
+        .split("Successfully allocated passive skill id: ")
+        .nth(1)
+    {
         let mut parts = rest.split(", name: ");
         let id = parts.next()?.trim();
         let name = parts.next()?.trim();

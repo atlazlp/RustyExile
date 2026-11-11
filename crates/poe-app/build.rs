@@ -8,7 +8,10 @@ fn main() {
         let mut res = winres::WindowsResource::new();
         res.set_icon(icon.to_str().expect("portal.ico path must be utf-8"));
         res.set("ProductName", "RustyExile");
-        res.set("FileDescription", "Path of Exile 1 campaign leveling overlay");
+        res.set(
+            "FileDescription",
+            "Path of Exile 1 campaign leveling overlay",
+        );
         if let Err(err) = res.compile() {
             panic!("winres failed: {err}");
         }

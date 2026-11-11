@@ -1,40 +1,42 @@
 use crate::draw::{Frame, Hit, Painter};
-use poe_core::{force_complete, parse_chord, visible_lines, AppState, HudCorner};
+use poe_core::{
+    force_complete, nudge_events, nudge_groups, parse_chord, visible_lines, AppState, HudCorner,
+};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use windows::core::w;
+use windows::core::BOOL;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
 };
+use windows::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    GetAsyncKeyState, RegisterHotKey, SendInput, UnregisterHotKey, INPUT,
-    INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL,
-    MOD_NOREPEAT, MOD_SHIFT, VIRTUAL_KEY, VK_A, VK_CONTROL, VK_MENU, VK_RETURN, VK_V,
+    GetAsyncKeyState, RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_0, INPUT_KEYBOARD,
+    KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
+    VIRTUAL_KEY, VK_A, VK_CONTROL, VK_MENU, VK_RETURN, VK_V,
 };
 use windows::Win32::UI::Shell::{
-    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
-    SetCurrentProcessExplicitAppUserModelID,
+    SetCurrentProcessExplicitAppUserModelID, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP,
+    NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
-use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, BringWindowToTop, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
-    DestroyMenu, DispatchMessageW, EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow,
-    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PeekMessageW,
-    RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
-    TranslateMessage, UpdateLayeredWindow, CreateIcon, CW_USEDEFAULT, GWLP_HWNDPARENT, GWL_EXSTYLE,
-    HICON, HWND_NOTOPMOST, HWND_TOPMOST, MF_STRING, MSG, PM_REMOVE, SW_HIDE, SW_RESTORE,
-    SW_SHOW, SW_SHOWNA, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, TPM_LEFTALIGN,
-    TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_COMMAND, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
-    WS_POPUP,
-};
-use windows::Win32::Graphics::Gdi::{BLENDFUNCTION, AC_SRC_ALPHA, AC_SRC_OVER};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
-use windows::core::BOOL;
+use windows::Win32::UI::WindowsAndMessaging::{
+    AppendMenuW, BringWindowToTop, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
+    DestroyIcon, DestroyMenu, DispatchMessageW, EnumWindows, GetClassNameW, GetCursorPos,
+    GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic,
+    IsWindowVisible, PeekMessageW, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW,
+    SetWindowPos, ShowWindow, TrackPopupMenu, TranslateMessage, UpdateLayeredWindow, CW_USEDEFAULT,
+    GWLP_HWNDPARENT, GWL_EXSTYLE, HICON, HWND_NOTOPMOST, HWND_TOPMOST, MF_STRING, MSG, PM_REMOVE,
+    SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE,
+    SW_SHOW, SW_SHOWNA, TPM_LEFTALIGN, TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_COMMAND, WM_HOTKEY,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+};
 
 const WM_TRAYICON: u32 = WM_APP + 40;
 const TRAY_ID: u32 = 1;
@@ -119,7 +121,11 @@ fn key_input(vk: VIRTUAL_KEY, up: bool) -> INPUT {
             ki: KEYBDINPUT {
                 wVk: vk,
                 wScan: 0,
-                dwFlags: if up { KEYEVENTF_KEYUP } else { KEYBD_EVENT_FLAGS(0) },
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    KEYBD_EVENT_FLAGS(0)
+                },
                 time: 0,
                 dwExtraInfo: 0,
             },
@@ -206,7 +212,8 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
                 }
             }
         }
-        let near = (cursor.x - (rect.left + width as i32 / 2)).abs() < 90 && (cursor.y - rect.top).abs() < 48;
+        let near = (cursor.x - (rect.left + width as i32 / 2)).abs() < 90
+            && (cursor.y - rect.top).abs() < 48;
         let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32) < 0;
         let alt = GetAsyncKeyState(VK_MENU.0 as i32) < 0;
         let Ok(shared) = state.lock() else { continue };
@@ -248,7 +255,14 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         };
         let sig = format!(
             "{}:{}:{}:{}:{near}:{ctrl}:{alt}:{}:{}:{}:{:?}",
-            rect.left, rect.top, width, height, lines.len(), placing, show_config_button, custom
+            rect.left,
+            rect.top,
+            width,
+            height,
+            lines.len(),
+            placing,
+            show_config_button,
+            custom
         );
         drop(shared);
         let panel_hidden = !IsWindowVisible(panel).as_bool();
@@ -266,7 +280,13 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
                 placing,
             );
             if place_panel(panel, &frame, rect.left, rect.top, ctrl && alt || placing) {
-                place_button(button, &frame, rect.left, rect.top, near && show_config_button && !placing);
+                place_button(
+                    button,
+                    &frame,
+                    rect.left,
+                    rect.top,
+                    near && show_config_button && !placing,
+                );
                 last = sig;
             }
         }
@@ -301,8 +321,14 @@ unsafe fn sync_hotkeys(hwnd: HWND, shared: &AppState, previous: &mut String) {
         .collect::<Vec<_>>()
         .join("|");
     let next = format!(
-        "{}|{}|{}|{chat}",
-        shared.settings.hotkeys.toggle_hud, shared.settings.hotkeys.open_config, shared.settings.hotkeys.paste_regex
+        "{}|{}|{}|{}|{}|{}|{}|{chat}",
+        shared.settings.hotkeys.toggle_hud,
+        shared.settings.hotkeys.open_config,
+        shared.settings.hotkeys.paste_regex,
+        shared.settings.hotkeys.events_back,
+        shared.settings.hotkeys.events_forward,
+        shared.settings.hotkeys.group_back,
+        shared.settings.hotkeys.group_forward,
     );
     if next == *previous {
         return;
@@ -314,6 +340,10 @@ unsafe fn sync_hotkeys(hwnd: HWND, shared: &AppState, previous: &mut String) {
     bind_hotkey(hwnd, 1, &shared.settings.hotkeys.toggle_hud);
     bind_hotkey(hwnd, 2, &shared.settings.hotkeys.open_config);
     bind_hotkey(hwnd, 3, &shared.settings.hotkeys.paste_regex);
+    bind_hotkey(hwnd, 4, &shared.settings.hotkeys.events_back);
+    bind_hotkey(hwnd, 5, &shared.settings.hotkeys.events_forward);
+    bind_hotkey(hwnd, 6, &shared.settings.hotkeys.group_back);
+    bind_hotkey(hwnd, 7, &shared.settings.hotkeys.group_forward);
     for (index, cmd) in shared.settings.hotkeys.chat.iter().enumerate() {
         if cmd.hotkey.is_empty() || cmd.text.is_empty() {
             continue;
@@ -324,7 +354,9 @@ unsafe fn sync_hotkeys(hwnd: HWND, shared: &AppState, previous: &mut String) {
 
 unsafe fn bind_hotkey(hwnd: HWND, id: i32, chord: &str) {
     let chord = parse_chord(chord);
-    let Some(vk) = virtual_key(&chord.key) else { return };
+    let Some(vk) = virtual_key(&chord.key) else {
+        return;
+    };
     let mut mods = MOD_NOREPEAT;
     if chord.ctrl {
         mods |= MOD_CONTROL;
@@ -339,6 +371,15 @@ unsafe fn bind_hotkey(hwnd: HWND, id: i32, chord: &str) {
 }
 
 fn virtual_key(name: &str) -> Option<u32> {
+    match name {
+        "comma" => return Some(0xBC),
+        "dot" | "period" => return Some(0xBE),
+        "left" => return Some(0x25),
+        "right" => return Some(0x27),
+        "up" => return Some(0x26),
+        "down" => return Some(0x28),
+        _ => {}
+    }
     let mut chars = name.chars();
     let ch = chars.next()?.to_ascii_uppercase();
     if chars.next().is_none() && ch.is_ascii_alphanumeric() {
@@ -379,7 +420,11 @@ fn on_hotkey(id: i32) {
             );
             app.status = format!("paste:{regex}");
         }
-            id if id >= 10 => {
+        4 => shift_hotkey(&mut app, -1, false),
+        5 => shift_hotkey(&mut app, 1, false),
+        6 => shift_hotkey(&mut app, -1, true),
+        7 => shift_hotkey(&mut app, 1, true),
+        id if id >= 10 => {
             let index = (id - 10) as usize;
             if let Some(cmd) = app.settings.hotkeys.chat.get(index) {
                 if !cmd.text.is_empty() && !cmd.hotkey.is_empty() {
@@ -395,7 +440,25 @@ fn on_hotkey(id: i32) {
     }
 }
 
-unsafe fn place_panel(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, capture: bool) -> bool {
+fn shift_hotkey(app: &mut AppState, delta: i32, groups: bool) {
+    let Some(character) = app.active_character_mut() else {
+        return;
+    };
+    if groups {
+        nudge_groups(character, delta);
+    } else {
+        nudge_events(character, delta);
+    }
+    app.dirty_characters = true;
+}
+
+unsafe fn place_panel(
+    hwnd: HWND,
+    frame: &Frame,
+    origin_x: i32,
+    origin_y: i32,
+    capture: bool,
+) -> bool {
     let [x, y, w, h] = frame.panel;
     if w <= 0 || h <= 0 {
         hide_layered(hwnd);
@@ -405,7 +468,14 @@ unsafe fn place_panel(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, c
         click.panel_hits = frame.hits.clone();
     }
     reveal(hwnd);
-    let painted = move_layered(hwnd, origin_x + x, origin_y + y, frame.width, frame.height, &frame.bgra);
+    let painted = move_layered(
+        hwnd,
+        origin_x + x,
+        origin_y + y,
+        frame.width,
+        frame.height,
+        &frame.bgra,
+    );
     set_click_through(hwnd, !capture);
     reveal(hwnd);
     painted && IsWindowVisible(hwnd).as_bool()
@@ -498,7 +568,11 @@ unsafe fn move_layered(hwnd: HWND, x: i32, y: i32, width: u32, height: u32, bgra
     )
     .unwrap_or_default();
     if !bitmap.0.is_null() && !bits.is_null() {
-        std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u8, bgra.len().min((width * height * 4) as usize));
+        std::ptr::copy_nonoverlapping(
+            bgra.as_ptr(),
+            bits as *mut u8,
+            bgra.len().min((width * height * 4) as usize),
+        );
         let old = SelectObject(mem, HGDIOBJ(bitmap.0));
         let blend = BLENDFUNCTION {
             BlendOp: AC_SRC_OVER as u8,
@@ -508,7 +582,10 @@ unsafe fn move_layered(hwnd: HWND, x: i32, y: i32, width: u32, height: u32, bgra
         };
         let dst = POINT { x, y };
         let src = POINT { x: 0, y: 0 };
-        let size = SIZE { cx: width as i32, cy: height as i32 };
+        let size = SIZE {
+            cx: width as i32,
+            cy: height as i32,
+        };
         let dst_ptr = std::ptr::addr_of!(dst);
         let size_ptr = std::ptr::addr_of!(size);
         let src_ptr = std::ptr::addr_of!(src);
@@ -688,7 +765,16 @@ unsafe fn move_over_game(config: HWND, game: HWND) -> bool {
     } else {
         game_rect.top + (game_h - window_h) / 2
     };
-    SetWindowPos(config, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW).is_ok()
+    SetWindowPos(
+        config,
+        Some(HWND_TOPMOST),
+        x,
+        y,
+        0,
+        0,
+        SWP_NOSIZE | SWP_SHOWWINDOW,
+    )
+    .is_ok()
 }
 
 unsafe fn force_foreground(hwnd: HWND) {
@@ -707,7 +793,10 @@ unsafe fn force_foreground(hwnd: HWND) {
 
 unsafe fn find_config_window() -> Option<HWND> {
     let mut found = None;
-    let _ = EnumWindows(Some(enum_config_proc), LPARAM(&mut found as *mut _ as isize));
+    let _ = EnumWindows(
+        Some(enum_config_proc),
+        LPARAM(&mut found as *mut _ as isize),
+    );
     found
 }
 
@@ -786,7 +875,12 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
     BOOL(1)
 }
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     if msg == WM_TRAYICON {
         let mouse = lparam.0 as u32;
         if mouse == WM_LBUTTONUP {
@@ -909,7 +1003,11 @@ fn on_click(hwnd: HWND, lparam: LPARAM) {
     if hwnd == panel {
         if app.hud_placing {
             let confirm = hits.iter().any(|hit| {
-                hit.id == "confirm" && x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h
+                hit.id == "confirm"
+                    && x >= hit.x
+                    && y >= hit.y
+                    && x < hit.x + hit.w
+                    && y < hit.y + hit.h
             });
             if confirm {
                 if app.settings.custom_x.is_none() {
@@ -934,7 +1032,10 @@ fn on_click(hwnd: HWND, lparam: LPARAM) {
             }
             return;
         }
-        if let Some(hit) = hits.iter().find(|hit| x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h) {
+        if let Some(hit) = hits
+            .iter()
+            .find(|hit| x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h)
+        {
             if let Some(character) = app.active_character_mut() {
                 force_complete(&mut character.progress, &hit.id);
                 app.dirty_characters = true;
@@ -952,7 +1053,9 @@ fn panel_offset(panel: isize) -> (i32, i32) {
         if let Some(game) = find_poe_window() {
             let _ = GetWindowRect(game, std::ptr::addr_of_mut!(game_rect));
         }
-        (panel_rect.left - game_rect.left, panel_rect.top - game_rect.top)
+        (
+            panel_rect.left - game_rect.left,
+            panel_rect.top - game_rect.top,
+        )
     }
 }
-

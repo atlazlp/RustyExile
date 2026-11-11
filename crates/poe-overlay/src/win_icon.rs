@@ -21,7 +21,10 @@ pub fn apply_to_titled_windows(title: &str) {
             big,
             small,
         };
-        let _ = EnumWindows(Some(enum_proc), LPARAM(&mut state as *mut EnumState as isize));
+        let _ = EnumWindows(
+            Some(enum_proc),
+            LPARAM(&mut state as *mut EnumState as isize),
+        );
     }
 }
 

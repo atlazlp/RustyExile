@@ -49,7 +49,10 @@ pub fn vendor_gem_regex(names: &[String]) -> String {
     for name in names {
         let mut escaped = String::new();
         for ch in name.to_ascii_lowercase().chars() {
-            if matches!(ch, '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' | '^' | '$') {
+            if matches!(
+                ch,
+                '.' | '+' | '*' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|' | '\\' | '^' | '$'
+            ) {
                 escaped.push('\\');
             }
             escaped.push(ch);
