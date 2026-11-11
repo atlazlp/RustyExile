@@ -26,8 +26,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PeekMessageW,
     RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
     TranslateMessage, UpdateLayeredWindow, CreateIcon, CW_USEDEFAULT, GWLP_HWNDPARENT, GWL_EXSTYLE,
-    HICON, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, MF_STRING, MSG, PM_REMOVE, SW_HIDE, SW_RESTORE,
-    SW_SHOW, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, TPM_LEFTALIGN,
+    HICON, HWND_NOTOPMOST, HWND_TOPMOST, MF_STRING, MSG, PM_REMOVE, SW_HIDE, SW_RESTORE,
+    SW_SHOW, SW_SHOWNA, SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, TPM_LEFTALIGN,
     TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_COMMAND, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
     WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
     WS_POPUP,
@@ -176,19 +176,15 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
             DispatchMessageW(&msg);
         }
         let Some(game) = find_poe_window() else {
-            let _ = ShowWindow(panel, SW_HIDE);
-            let _ = ShowWindow(button, SW_HIDE);
+            conceal(panel, button, &mut last);
             std::thread::sleep(std::time::Duration::from_millis(200));
             continue;
         };
-        if GetForegroundWindow() != game {
-            let _ = ShowWindow(panel, SW_HIDE);
-            let _ = ShowWindow(button, SW_HIDE);
+        if GetForegroundWindow() != game || IsIconic(game).as_bool() {
+            conceal(panel, button, &mut last);
             std::thread::sleep(std::time::Duration::from_millis(50));
             continue;
         }
-        let _ = SetWindowLongPtrW(panel, GWLP_HWNDPARENT, game.0 as isize);
-        let _ = SetWindowLongPtrW(button, GWLP_HWNDPARENT, game.0 as isize);
         let mut rect = RECT::default();
         if GetWindowRect(game, std::ptr::addr_of_mut!(rect)).is_err() {
             continue;
@@ -217,8 +213,7 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         sync_hotkeys(panel, &shared, &mut hotkey_sig);
         if !shared.hud_enabled || !shared.settings.experience_chosen {
             drop(shared);
-            let _ = ShowWindow(panel, SW_HIDE);
-            let _ = ShowWindow(button, SW_HIDE);
+            conceal(panel, button, &mut last);
             std::thread::sleep(std::time::Duration::from_millis(30));
             continue;
         }
@@ -256,8 +251,8 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
             rect.left, rect.top, width, height, lines.len(), placing, show_config_button, custom
         );
         drop(shared);
-        if sig != last {
-            last = sig;
+        let panel_hidden = !IsWindowVisible(panel).as_bool();
+        if sig != last || panel_hidden {
             let frame = painter.paint(
                 width,
                 height,
@@ -270,8 +265,10 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
                 custom,
                 placing,
             );
-            place_panel(panel, &frame, rect.left, rect.top, ctrl && alt || placing);
-            place_button(button, &frame, rect.left, rect.top, near && show_config_button && !placing);
+            if place_panel(panel, &frame, rect.left, rect.top, ctrl && alt || placing) {
+                place_button(button, &frame, rect.left, rect.top, near && show_config_button && !placing);
+                last = sig;
+            }
         }
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
@@ -398,19 +395,20 @@ fn on_hotkey(id: i32) {
     }
 }
 
-unsafe fn place_panel(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, capture: bool) {
+unsafe fn place_panel(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, capture: bool) -> bool {
     let [x, y, w, h] = frame.panel;
     if w <= 0 || h <= 0 {
-        let _ = ShowWindow(hwnd, SW_HIDE);
-        return;
+        hide_layered(hwnd);
+        return true;
     }
     if let Ok(mut click) = CLICK.lock() {
         click.panel_hits = frame.hits.clone();
     }
-    move_layered(hwnd, origin_x + x, origin_y + y, frame.width, frame.height, &frame.bgra);
+    reveal(hwnd);
+    let painted = move_layered(hwnd, origin_x + x, origin_y + y, frame.width, frame.height, &frame.bgra);
     set_click_through(hwnd, !capture);
-    let _ = ShowWindow(hwnd, SW_SHOWNA);
-    let _ = SetWindowPos(hwnd, Some(HWND_TOP), 0, 0, 0, 0, SWP_NOACTIVATE | windows::Win32::UI::WindowsAndMessaging::SWP_NOMOVE | windows::Win32::UI::WindowsAndMessaging::SWP_NOSIZE);
+    reveal(hwnd);
+    painted && IsWindowVisible(hwnd).as_bool()
 }
 
 unsafe fn place_button(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, near: bool) {
@@ -422,6 +420,7 @@ unsafe fn place_button(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, 
         let _ = ShowWindow(hwnd, SW_HIDE);
         return;
     }
+    reveal(hwnd);
     move_layered(
         hwnd,
         origin_x + button.x,
@@ -431,10 +430,49 @@ unsafe fn place_button(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, 
         &button.bgra,
     );
     set_click_through(hwnd, false);
-    let _ = ShowWindow(hwnd, SW_SHOWNA);
+    reveal(hwnd);
 }
 
-unsafe fn move_layered(hwnd: HWND, x: i32, y: i32, width: u32, height: u32, bgra: &[u8]) {
+unsafe fn conceal(panel: HWND, button: HWND, last: &mut String) {
+    if last.is_empty() && !IsWindowVisible(panel).as_bool() && !IsWindowVisible(button).as_bool() {
+        return;
+    }
+    last.clear();
+    hide_layered(panel);
+    hide_layered(button);
+}
+
+unsafe fn hide_layered(hwnd: HWND) {
+    let _ = SetWindowPos(
+        hwnd,
+        Some(HWND_NOTOPMOST),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_HIDEWINDOW,
+    );
+}
+
+unsafe fn reveal(hwnd: HWND) {
+    // Owning the game window gets this popup cloaked on alt-tab. On some
+    // machines it then stays invisible until Rusty is focused and the game is clicked.
+    if GetWindowLongPtrW(hwnd, GWLP_HWNDPARENT) != 0 {
+        SetWindowLongPtrW(hwnd, GWLP_HWNDPARENT, 0);
+    }
+    let _ = ShowWindow(hwnd, SW_SHOWNA);
+    let _ = SetWindowPos(
+        hwnd,
+        Some(HWND_TOPMOST),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+    );
+}
+
+unsafe fn move_layered(hwnd: HWND, x: i32, y: i32, width: u32, height: u32, bgra: &[u8]) -> bool {
     let screen = GetDC(None);
     let mem = CreateCompatibleDC(Some(screen));
     let info = BITMAPINFO {
@@ -475,7 +513,7 @@ unsafe fn move_layered(hwnd: HWND, x: i32, y: i32, width: u32, height: u32, bgra
         let size_ptr = std::ptr::addr_of!(size);
         let src_ptr = std::ptr::addr_of!(src);
         let blend_ptr = std::ptr::addr_of!(blend);
-        let _ = UpdateLayeredWindow(
+        let painted = UpdateLayeredWindow(
             hwnd,
             Some(screen),
             Some(dst_ptr),
@@ -485,12 +523,17 @@ unsafe fn move_layered(hwnd: HWND, x: i32, y: i32, width: u32, height: u32, bgra
             COLORREF(0),
             Some(blend_ptr),
             ULW_ALPHA,
-        );
+        )
+        .is_ok();
         SelectObject(mem, old);
         let _ = DeleteObject(HGDIOBJ(bitmap.0));
+        let _ = DeleteDC(mem);
+        let _ = ReleaseDC(None, screen);
+        return painted;
     }
     let _ = DeleteDC(mem);
     let _ = ReleaseDC(None, screen);
+    false
 }
 
 unsafe fn set_click_through(hwnd: HWND, enabled: bool) {
@@ -696,19 +739,46 @@ unsafe extern "system" fn enum_config_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 }
 
 unsafe fn find_poe_window() -> Option<HWND> {
+    let foreground = GetForegroundWindow();
+    if is_game_window(foreground) {
+        return Some(foreground);
+    }
     let mut found = None;
     let _ = EnumWindows(Some(enum_proc), LPARAM(&mut found as *mut _ as isize));
     found
 }
 
-unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
-    if !IsWindowVisible(hwnd).as_bool() {
-        return BOOL(1);
+unsafe fn is_game_window(hwnd: HWND) -> bool {
+    if hwnd.0.is_null() || !IsWindowVisible(hwnd).as_bool() {
+        return false;
     }
+    if window_title(hwnd) != "Path of Exile" {
+        return false;
+    }
+    let class = window_class(hwnd);
+    class != "Chrome_WidgetWin_1" && class != "MozillaWindowClass"
+}
+
+unsafe fn window_title(hwnd: HWND) -> String {
     let mut title = [0u16; 256];
     let len = GetWindowTextW(hwnd, &mut title);
-    let text = String::from_utf16_lossy(&title[..len as usize]);
-    if text == "Path of Exile" {
+    if len <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&title[..len as usize])
+}
+
+unsafe fn window_class(hwnd: HWND) -> String {
+    let mut class_name = [0u16; 64];
+    let len = GetClassNameW(hwnd, &mut class_name);
+    if len <= 0 {
+        return String::new();
+    }
+    String::from_utf16_lossy(&class_name[..len as usize])
+}
+
+unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    if is_game_window(hwnd) {
         let slot = &mut *(lparam.0 as *mut Option<HWND>);
         *slot = Some(hwnd);
         return BOOL(0);

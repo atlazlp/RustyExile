@@ -233,5 +233,33 @@ mod tests {
         let route = build_route(&catalog, "Templar", None, true);
         assert!(route.events.iter().any(|e| e.text.contains("The Coast")));
         assert!(route.events.iter().any(|e| e.kind == poe_core::EventKind::GemPick || e.kind == poe_core::EventKind::GemBuy));
+        assert!(route.events.iter().any(|event| {
+            event.kind.is_gem()
+                && event.npc.as_deref() == Some("Tarkleigh")
+                && event.text.contains("{loc}Lioneye's Watch{/}")
+        }));
+        for event in route.events.iter().filter(|event| event.kind.is_gem()) {
+            assert!(!event.text.contains("Lower Prison"), "{}", event.text);
+            let Some(npc) = event.npc.as_deref() else {
+                continue;
+            };
+            if npc.eq_ignore_ascii_case("Siosa") {
+                assert!(event.text.contains("{loc}The Library{/}"), "{}", event.text);
+                continue;
+            }
+            if !event.text.contains(" in ") {
+                continue;
+            }
+            let town = catalog
+                .areas
+                .iter()
+                .find(|area| area.act == event.act && area.is_town)
+                .unwrap_or_else(|| panic!("act {} has no town", event.act));
+            assert!(
+                event.text.contains(&format!("{{loc}}{}{{/}}", town.name)),
+                "{}",
+                event.text
+            );
+        }
     }
 }

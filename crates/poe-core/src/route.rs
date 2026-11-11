@@ -161,13 +161,14 @@ fn push_quest_gems(
             continue;
         }
         ids.push(id.clone());
+        let place = gem_location(catalog, &npc, act, zone_name);
         route.events.push(CampaignEvent {
             id,
             act,
             text: format!(
                 "{verb} {} from {npc} in {}",
                 gem_color(&info.primary_attribute, &info.name),
-                loc(zone_name)
+                loc(&place)
             ),
             detail: String::new(),
             icon: format!("gem:{}", info.name),
@@ -258,6 +259,23 @@ fn add_lilly_and_trials(route: &mut CharacterRoute, catalog: &Catalog, class_nam
             zone_name: Some("Lioneye's Watch".into()),
         });
     }
+}
+
+fn gem_location(catalog: &Catalog, npc: &str, act: u8, zone_name: &str) -> String {
+    if npc.eq_ignore_ascii_case("Siosa") {
+        return catalog
+            .area("1_3_17_1")
+            .map(|area| area.name.clone())
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "The Library".to_string());
+    }
+    catalog
+        .areas
+        .iter()
+        .find(|area| area.act == act && area.is_town)
+        .map(|area| area.name.clone())
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| zone_name.to_string())
 }
 
 fn loc(name: &str) -> String {
@@ -854,5 +872,86 @@ Get {waypoint_get}
         assert!(route.groups.iter().all(|group| {
             group.event_ids.iter().all(|id| !id.starts_with("gem-lilly-") && !id.starts_with("gem-trial-"))
         }));
+    }
+
+    #[test]
+    fn gem_rewards_name_the_act_town_except_siosa() {
+        let mut data = catalog();
+        data.areas.push(AreaInfo {
+            id: "1_1_7_1".into(),
+            name: "The Lower Prison".into(),
+            act: 1,
+            is_town: false,
+            has_waypoint: true,
+        });
+        data.areas.push(AreaInfo {
+            id: "1_3_town".into(),
+            name: "The Sarn Encampment".into(),
+            act: 3,
+            is_town: true,
+            has_waypoint: true,
+        });
+        data.areas.push(AreaInfo {
+            id: "1_3_17_1".into(),
+            name: "The Library".into(),
+            act: 3,
+            is_town: false,
+            has_waypoint: true,
+        });
+        data.gems.push(GemInfo {
+            id: "frostblink".into(),
+            name: "Frostblink".into(),
+            primary_attribute: "dexterity".into(),
+            required_level: 4,
+            is_support: false,
+        });
+        data.quests.push(QuestInfo {
+            id: "a1q2".into(),
+            name: "The Caged Brute".into(),
+            act: 1,
+            npc: "Tarkleigh".into(),
+            gems: vec![QuestGem {
+                gem_id: "Metadata/Items/Gems/SkillGemFireball".into(),
+                classes: vec!["Witch".into()],
+                npc: "Tarkleigh".into(),
+                source: GemSource::Vendor,
+            }],
+        });
+        data.quests.push(QuestInfo {
+            id: "a3q12".into(),
+            name: "A Fixture of Fate".into(),
+            act: 3,
+            npc: "Siosa".into(),
+            gems: vec![QuestGem {
+                gem_id: "frostblink".into(),
+                classes: vec!["Witch".into()],
+                npc: "Siosa".into(),
+                source: GemSource::Vendor,
+            }],
+        });
+        data.routes[0].1 = "\
+➞ {enter|1_1_7_1} #The Lower Prison
+Hand in {quest|a1q2} #The Caged Brute
+"
+        .into();
+        data.routes.push((
+            3,
+            "\
+➞ {enter|1_3_17_1} #The Library
+Hand in {quest|a3q12} #A Fixture of Fate
+"
+            .into(),
+        ));
+        let route = build_route(&data, "Witch", None, true);
+        let tarkleigh = route.events.iter().find(|event| event.text.contains("Fireball")).unwrap();
+        assert!(
+            tarkleigh.text.contains("{loc}Lioneye's Watch{/}"),
+            "{}",
+            tarkleigh.text
+        );
+        assert!(!tarkleigh.text.contains("Lower Prison"), "{}", tarkleigh.text);
+        let siosa = route.events.iter().find(|event| event.npc.as_deref() == Some("Siosa")).unwrap();
+        assert!(siosa.text.contains("{loc}The Library{/}"), "{}", siosa.text);
+        assert!(!siosa.text.contains("Sarn"), "{}", siosa.text);
     }
 }
