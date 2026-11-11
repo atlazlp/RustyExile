@@ -24,7 +24,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: system packages
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev zip
+        run: |
+          set -eu
+          for attempt in 1 2 3 4 5; do
+            if sudo apt-get update && sudo apt-get install -y pkg-config libwayland-dev libxkbcommon-dev libegl1-mesa-dev libgl1-mesa-dev zip; then
+              exit 0
+            fi
+            echo "apt failed on attempt ${attempt}; the Ubuntu mirror could not be resolved"
+            sleep 20
+          done
+          exit 1
       - name: build
         run: cargo build --release -p RustyExile
       - name: package linux
@@ -76,6 +85,7 @@ jobs:
 
   publish:
     needs: build
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
