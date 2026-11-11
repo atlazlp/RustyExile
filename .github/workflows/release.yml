@@ -48,10 +48,19 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
-          if (-not (Test-Path $iscc)) {
-            $setup = Join-Path $env:RUNNER_TEMP "innosetup.exe"
-            Invoke-WebRequest -Uri "https://jrsoftware.org/download.php/is.exe" -OutFile $setup
+          $ErrorActionPreference = "Stop"
+          $iscc = @(
+            (Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"),
+            "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
+            "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) {
+            $setup = Join-Path $env:RUNNER_TEMP "innosetup-6.7.4.exe"
+            Invoke-WebRequest -Uri "https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe" -OutFile $setup
+            $header = [System.IO.File]::ReadAllBytes($setup)[0..1]
+            if ($header[0] -ne 0x4D -or $header[1] -ne 0x5A) {
+              throw "Inno Setup download was not an executable."
+            }
             Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait
           }
           ./packaging/windows/build-installer.ps1 -SkipBuild
