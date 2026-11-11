@@ -10,21 +10,21 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-#[cfg(unix)]
+#[cfg(any(unix, windows))]
 mod instance;
 #[cfg(target_os = "linux")]
 mod tray;
 
 fn main() {
-    #[cfg(unix)]
-    let listener = match instance::acquire() {
-        Some(listener) => listener,
+    #[cfg(any(unix, windows))]
+    let instance = match instance::acquire() {
+        Some(instance) => instance,
         None => return,
     };
     poe_overlay::prepare_config_window();
     let state = Arc::new(Mutex::new(load_state()));
-    #[cfg(unix)]
-    instance::serve(listener, Arc::clone(&state));
+    #[cfg(any(unix, windows))]
+    instance::serve(instance, Arc::clone(&state));
     let watch = Arc::clone(&state);
     std::thread::Builder::new()
         .name("poe-watch".into())

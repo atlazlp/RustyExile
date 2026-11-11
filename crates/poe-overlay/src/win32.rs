@@ -7,14 +7,20 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use windows::core::w;
-use windows::core::BOOL;
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows::core::{BOOL, PCWSTR};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, SetLastError, COLORREF, ERROR_ALREADY_EXISTS, HANDLE, HWND, LPARAM,
+    LRESULT, POINT, RECT, SIZE, WAIT_OBJECT_0, WPARAM,
+};
 use windows::Win32::Graphics::Gdi::{
     CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
     BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
 };
 use windows::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION};
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
+use windows::Win32::System::Threading::{
+    AttachThreadInput, CreateEventW, CreateMutexW, GetCurrentThreadId, OpenEventW, OpenMutexW,
+    SetEvent, WaitForSingleObject, EVENT_MODIFY_STATE, SYNCHRONIZATION_SYNCHRONIZE,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_0, INPUT_KEYBOARD,
     KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
@@ -26,16 +32,17 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, BringWindowToTop, CreateIcon, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
-    DestroyIcon, DestroyMenu, DispatchMessageW, EnumWindows, GetClassNameW, GetCursorPos,
-    GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic,
-    IsWindowVisible, PeekMessageW, RegisterClassW, SetForegroundWindow, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, TrackPopupMenu, TranslateMessage, UpdateLayeredWindow, CW_USEDEFAULT,
-    GWLP_HWNDPARENT, GWL_EXSTYLE, HICON, HWND_NOTOPMOST, HWND_TOPMOST, MF_STRING, MSG, PM_REMOVE,
-    SWP_HIDEWINDOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE,
-    SW_SHOW, SW_SHOWNA, TPM_LEFTALIGN, TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_COMMAND, WM_HOTKEY,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    AllowSetForegroundWindow, AppendMenuW, BringWindowToTop, CreateIcon, CreatePopupMenu,
+    CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, EnumWindows,
+    GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PeekMessageW, RegisterClassW,
+    SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
+    TranslateMessage, UpdateLayeredWindow, ASFW_ANY, CW_USEDEFAULT, GWLP_HWNDPARENT, GWL_EXSTYLE,
+    HICON, HWND_NOTOPMOST, HWND_TOPMOST, MF_STRING, MSG, PM_REMOVE, SWP_HIDEWINDOW, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNA, TPM_LEFTALIGN,
+    TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_COMMAND, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    WS_POPUP,
 };
 
 const WM_TRAYICON: u32 = WM_APP + 40;
@@ -1039,6 +1046,141 @@ fn on_click(hwnd: HWND, lparam: LPARAM) {
                 app.dirty_characters = true;
             }
         }
+    }
+}
+
+const INSTANCE_MUTEX: &str = "Local\\RustyExile.Instance";
+const INSTANCE_EVENT: &str = "Local\\RustyExile.Activate";
+
+pub struct SingleInstance {
+    mutex: isize,
+    event: isize,
+}
+
+impl Drop for SingleInstance {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = CloseHandle(owned_handle(self.mutex));
+            let _ = CloseHandle(owned_handle(self.event));
+        }
+    }
+}
+
+fn owned_handle(raw: isize) -> HANDLE {
+    HANDLE(raw as *mut std::ffi::c_void)
+}
+
+pub fn claim_single_instance() -> Option<SingleInstance> {
+    claim_named(INSTANCE_MUTEX, INSTANCE_EVENT)
+}
+
+pub fn watch_single_instance(instance: SingleInstance, on_activate: impl Fn() + Send + 'static) {
+    std::thread::Builder::new()
+        .name("poe-instance".into())
+        .spawn(move || {
+            let held = instance;
+            loop {
+                let status = unsafe { WaitForSingleObject(owned_handle(held.event), u32::MAX) };
+                if status != WAIT_OBJECT_0 {
+                    break;
+                }
+                on_activate();
+            }
+        })
+        .ok();
+}
+
+fn claim_named(mutex_name: &str, event_name: &str) -> Option<SingleInstance> {
+    let mutex_wide = wide_name(mutex_name);
+    let event_wide = wide_name(event_name);
+    unsafe {
+        if open_mutex(&mutex_wide) {
+            signal_existing(&event_wide);
+            return None;
+        }
+        SetLastError(windows::Win32::Foundation::WIN32_ERROR(0));
+        let mutex = CreateMutexW(None, false, PCWSTR(mutex_wide.as_ptr())).ok()?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = CloseHandle(mutex);
+            signal_existing(&event_wide);
+            return None;
+        }
+        SetLastError(windows::Win32::Foundation::WIN32_ERROR(0));
+        let event = CreateEventW(None, false, false, PCWSTR(event_wide.as_ptr())).ok()?;
+        if GetLastError() == ERROR_ALREADY_EXISTS {
+            let _ = CloseHandle(mutex);
+            let _ = CloseHandle(event);
+            signal_existing(&event_wide);
+            return None;
+        }
+        Some(SingleInstance {
+            mutex: mutex.0 as isize,
+            event: event.0 as isize,
+        })
+    }
+}
+
+fn wide_name(name: &str) -> Vec<u16> {
+    name.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+unsafe fn open_mutex(name: &[u16]) -> bool {
+    match OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, false, PCWSTR(name.as_ptr())) {
+        Ok(handle) => {
+            let _ = CloseHandle(handle);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+unsafe fn signal_existing(event_name: &[u16]) {
+    allow_existing_foreground();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(2) {
+        if let Ok(event) = OpenEventW(EVENT_MODIFY_STATE, false, PCWSTR(event_name.as_ptr())) {
+            let _ = SetEvent(event);
+            let _ = CloseHandle(event);
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(40));
+    }
+}
+
+unsafe fn allow_existing_foreground() {
+    let mut pid = 0u32;
+    if let Some(hwnd) = find_config_window() {
+        GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    }
+    if pid == 0 {
+        let _ = AllowSetForegroundWindow(ASFW_ANY);
+    } else {
+        let _ = AllowSetForegroundWindow(pid);
+    }
+}
+
+#[cfg(test)]
+mod instance_tests {
+    use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn second_launch_wakes_the_running_instance() {
+        let id = std::process::id();
+        let mutex = format!("Local\\RustyExile.Test.{id}");
+        let event = format!("Local\\RustyExile.Test.Activate.{id}");
+        let primary = claim_named(&mutex, &event).expect("primary instance");
+        let hits = Arc::new(AtomicUsize::new(0));
+        let counted = Arc::clone(&hits);
+        watch_single_instance(primary, move || {
+            counted.fetch_add(1, Ordering::SeqCst);
+        });
+        assert!(claim_named(&mutex, &event).is_none());
+        let started = Instant::now();
+        while hits.load(Ordering::SeqCst) == 0 && started.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(hits.load(Ordering::SeqCst), 1);
     }
 }
 

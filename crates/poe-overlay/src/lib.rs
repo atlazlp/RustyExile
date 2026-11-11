@@ -107,6 +107,19 @@ pub fn raise_config_window() {
 }
 
 #[cfg(windows)]
+pub use win32::SingleInstance;
+
+#[cfg(windows)]
+pub fn claim_single_instance() -> Option<SingleInstance> {
+    win32::claim_single_instance()
+}
+
+#[cfg(windows)]
+pub fn watch_single_instance(instance: SingleInstance, on_activate: impl Fn() + Send + 'static) {
+    win32::watch_single_instance(instance, on_activate);
+}
+
+#[cfg(windows)]
 pub fn game_is_open() -> bool {
     win32::game_is_open()
 }
