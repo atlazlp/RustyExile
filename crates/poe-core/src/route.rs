@@ -24,6 +24,7 @@ pub fn build_route(
     for (act, text) in &catalog.routes {
         steps.extend(parse_act(catalog, *act, text, league_start));
     }
+    assign_leading_area(&mut steps, catalog);
     let mut carry: Option<String> = None;
     for step in &mut steps {
         if step.area_id.is_none() {
@@ -321,6 +322,30 @@ fn push_trial(route: &mut CharacterRoute, catalog: &Catalog, name: &str) {
         npc: None,
         zone_name: Some("Aspirant's Trial".into()),
     });
+}
+
+fn assign_leading_area(steps: &mut [RawStep], catalog: &Catalog) {
+    let Some(prelude) = steps
+        .iter()
+        .find_map(|step| step.area_id.as_deref())
+        .and_then(|next| area_before(catalog, next))
+    else {
+        return;
+    };
+    for step in steps {
+        if step.area_id.is_some() {
+            break;
+        }
+        step.area_id = Some(prelude.clone());
+    }
+}
+
+fn area_before(catalog: &Catalog, next_id: &str) -> Option<String> {
+    if next_id == "1_1_town" && catalog.area("1_1_1").is_some() {
+        Some("1_1_1".into())
+    } else {
+        None
+    }
 }
 
 fn triggers_for(area_id: Option<&str>, name: &str) -> Vec<TriggerKind> {
@@ -728,6 +753,34 @@ Get {waypoint_get}
         assert!(matches!(
             coast.start[0],
             TriggerKind::ZoneEnter { ref area_id } if area_id == "1_1_2"
+        ));
+    }
+
+    #[test]
+    fn hillock_is_shown_on_the_twilight_strand() {
+        let mut data = catalog();
+        data.areas.insert(
+            0,
+            AreaInfo {
+                id: "1_1_1".into(),
+                name: "The Twilight Strand".into(),
+                act: 1,
+                is_town: false,
+                has_waypoint: false,
+            },
+        );
+        data.routes[0].1 = format!("Find and kill {{kill|Hillock}}\n{}", data.routes[0].1);
+        let route = build_route(&data, "Duelist", None, true);
+        let group = route.groups.iter().find(|g| g.name == "The Twilight Strand").unwrap();
+        assert!(matches!(
+            group.start[0],
+            TriggerKind::ZoneEnter { ref area_id } if area_id == "1_1_1"
+        ));
+        let hillock = route.events.iter().find(|e| e.text == "Find and kill Hillock").unwrap();
+        assert!(group.event_ids.iter().any(|id| id == &hillock.id));
+        assert!(matches!(
+            hillock.end[0],
+            TriggerKind::ZoneEnter { ref area_id } if area_id == "1_1_town"
         ));
     }
 

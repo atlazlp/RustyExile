@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 use poe_core::{
     apply_parsed, detect_running, load_catalog, load_character, load_regex_presets, load_settings,
     note_current_zone, nudge_events, read_log_tail, refresh_generated_route, save_catalog, save_character,

@@ -8,10 +8,6 @@ pub fn assets_root() -> PathBuf {
     if let Ok(path) = std::env::var("RUSTY_EXILE_ASSETS") {
         return PathBuf::from(path);
     }
-    let compiled = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets");
-    if compiled.join("data/gems.json").is_file() {
-        return compiled;
-    }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             let beside = dir.join("assets");
@@ -20,7 +16,7 @@ pub fn assets_root() -> PathBuf {
             }
         }
     }
-    compiled
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../assets")
 }
 
 pub fn load_catalog() -> Catalog {
@@ -162,22 +158,36 @@ fn collect_gems(bucket: Option<&serde_json::Value>, source: GemSource, fallback_
 }
 
     pub fn tray_icon_argb(size: u32) -> Option<(i32, i32, Vec<u8>)> {
-        let src = load_icon("portal")?;
-        let size = size.max(1);
-        let mut data = vec![0u8; (size * size * 4) as usize];
-        for y in 0..size {
-            for x in 0..size {
-                let sx = x * src.width() / size;
-                let sy = y * src.height() / size;
-                let pixel = src.get_pixel(sx.min(src.width() - 1), sy.min(src.height() - 1));
-                let index = ((y * size + x) * 4) as usize;
-                data[index] = pixel[3];
-                data[index + 1] = pixel[0];
-                data[index + 2] = pixel[1];
-                data[index + 3] = pixel[2];
-            }
+        let (width, height, rgba) = window_icon_rgba(size)?;
+        let mut data = vec![0u8; rgba.len()];
+        for (src, dst) in rgba.chunks_exact(4).zip(data.chunks_exact_mut(4)) {
+            dst[0] = src[3];
+            dst[1] = src[0];
+            dst[2] = src[1];
+            dst[3] = src[2];
         }
-        Some((size as i32, size as i32, data))
+        Some((width as i32, height as i32, data))
+    }
+
+    pub fn window_icon_rgba(size: u32) -> Option<(u32, u32, Vec<u8>)> {
+        let src = load_icon("portal").or_else(embedded_portal_icon)?;
+        let size = size.max(1).max(16);
+        let resized =
+            image::imageops::resize(&src, size, size, image::imageops::FilterType::Lanczos3);
+        let mut out = image::RgbaImage::from_pixel(size, size, image::Rgba([12, 24, 48, 255]));
+        let margin = (size / 16).max(1);
+        let inner = size.saturating_sub(margin * 2).max(1);
+        let portal =
+            image::imageops::resize(&resized, inner, inner, image::imageops::FilterType::Lanczos3);
+        image::imageops::overlay(&mut out, &portal, margin as i64, margin as i64);
+        let (width, height) = out.dimensions();
+        Some((width, height, out.into_raw()))
+    }
+
+    fn embedded_portal_icon() -> Option<RgbaImage> {
+        image::load_from_memory(include_bytes!("../../../assets/icons/ui/portal.png"))
+            .ok()
+            .map(|image| image.to_rgba8())
     }
 
     pub fn load_icon(key: &str) -> Option<RgbaImage> {

@@ -44,15 +44,21 @@ The program is `target/release/RustyExile`.
 
 ### Windows
 
-Open Git Bash in the repository folder and run:
+For a normal install, download `RustyExile-windows-x86_64-setup.exe` from the latest [GitHub release](https://github.com/atlazlp/RustyExile/releases/latest), run it, and start RustyExile from the Start Menu.
+
+To build from source, open Git Bash in the repository folder and run:
 
 ```bash
 bash installWindows.bash
 ```
 
-The script can install the Microsoft C++ build tools when the MSVC toolchain needs them, and it can add a Start Menu shortcut.
+That script can install the Microsoft C++ build tools when the MSVC toolchain needs them, and it can add a Start Menu shortcut. To also build the Windows setup program after a source build, install [Inno Setup](https://jrsoftware.org/isinfo.php) and run:
 
-The program is `target\release\RustyExile.exe`.
+```powershell
+powershell -ExecutionPolicy Bypass -File packaging/windows/build-installer.ps1
+```
+
+The program is `target\release\RustyExile.exe`. The setup program is `dist\RustyExile-windows-x86_64-setup.exe`.
 
 ## First run
 
@@ -62,9 +68,9 @@ The first window asks you to start as Beginner, Intermediate, or Advanced.
 - Intermediate turns tips off. The act list and landmarks stay on.
 - Advanced turns tips and the act list off. Gems from the build stay on. Landmarks stay on.
 
-Every switch can be changed later. Open configuration from the button at the top center of the game window, or with Ctrl+Shift+O.
+Every switch can be changed later. Open configuration from the button at the top center of the game window, or with Ctrl+Shift+O. Close that window with its close button.
 
-Zone entry shows the step or gem that starts in that zone, and hides it when the next route zone is entered. Ctrl+Alt+click clears a line early. The game log does not record quest turn-ins, gem pickups, or vendor buys. Passive-tree specs imported from Path of Building are saved and are not drawn yet.
+The Twilight Strand starts with killing Hillock. Each later zone shows the step or gem that starts there, and hides it when the next route zone is entered. Ctrl+Alt+click clears a line early. The game log does not record quest turn-ins, gem pickups, or vendor buys. Passive-tree specs imported from Path of Building are saved and are not drawn yet.
 
 ## Hotkeys
 
@@ -81,7 +87,7 @@ On Hyprland, the paste hotkey copies the regex and sends Ctrl+A, Ctrl+V to the g
 
 Automatic updates are on by default. RustyExile checks the latest GitHub release, replaces the program and its shipped assets, and keeps your settings and character builds. Turn this off under General. Check for updates then appears at the bottom of the side menu.
 
-A release is published by running the Release workflow from the Actions tab. It builds Linux and Windows from the version in `Cargo.toml` and tags `v` plus that version.
+A release is published by running the Release workflow from the Actions tab. It builds Linux and Windows from the version in `Cargo.toml`, tags `v` plus that version, and publishes the zip archives plus the Windows setup program.
 
 ## Credits
 

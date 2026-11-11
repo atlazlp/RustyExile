@@ -1,6 +1,9 @@
 use crate::draw::{Frame, Hit, Painter};
 use poe_core::{force_complete, parse_chord, visible_lines, AppState, HudCorner};
+use std::mem::size_of;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -12,17 +15,31 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL,
     MOD_NOREPEAT, MOD_SHIFT, VIRTUAL_KEY, VK_A, VK_CONTROL, VK_MENU, VK_RETURN, VK_V,
 };
+use windows::Win32::UI::Shell::{
+    Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
+    SetCurrentProcessExplicitAppUserModelID,
+};
+use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows, GetCursorPos, GetForegroundWindow,
-    GetWindowRect, IsWindowVisible, SetForegroundWindow,
-    PeekMessageW, RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage,
-    UpdateLayeredWindow, CW_USEDEFAULT, GWLP_HWNDPARENT, GWL_EXSTYLE, HWND_TOP, MSG, PM_REMOVE,
-    SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, ULW_ALPHA, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WNDCLASSW, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
+    AppendMenuW, BringWindowToTop, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
+    DestroyMenu, DispatchMessageW, EnumWindows, GetClassNameW, GetCursorPos, GetForegroundWindow,
+    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PeekMessageW,
+    RegisterClassW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
+    TranslateMessage, UpdateLayeredWindow, CreateIcon, CW_USEDEFAULT, GWLP_HWNDPARENT, GWL_EXSTYLE,
+    HICON, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, MF_STRING, MSG, PM_REMOVE, SW_HIDE, SW_RESTORE,
+    SW_SHOW, SW_SHOWNA, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, TPM_LEFTALIGN,
+    TPM_RIGHTBUTTON, ULW_ALPHA, WM_APP, WM_COMMAND, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_RBUTTONUP, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT,
+    WS_POPUP,
 };
 use windows::Win32::Graphics::Gdi::{BLENDFUNCTION, AC_SRC_ALPHA, AC_SRC_OVER};
 use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
 use windows::core::BOOL;
+
+const WM_TRAYICON: u32 = WM_APP + 40;
+const TRAY_ID: u32 = 1;
+const TRAY_CFG: usize = 1001;
+const TRAY_EXIT: usize = 1002;
 
 struct ClickState {
     app: Option<Arc<Mutex<AppState>>>,
@@ -42,6 +59,12 @@ static CLICK: Mutex<ClickState> = Mutex::new(ClickState {
 
 pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     unsafe { run_inner(state) }
+}
+
+pub fn prepare_process() {
+    unsafe {
+        let _ = SetCurrentProcessExplicitAppUserModelID(w!("atlazlp.RustyExile"));
+    }
 }
 
 pub fn send_paste() -> anyhow::Result<()> {
@@ -114,6 +137,7 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     RegisterClassW(std::ptr::addr_of!(class));
     let panel = create_popup(class_name)?;
     let button = create_popup(class_name)?;
+    let tray_icon = add_tray_icon(panel);
     if let Ok(mut click) = CLICK.lock() {
         click.app = Some(Arc::clone(&state));
         click.panel = panel.0 as isize;
@@ -127,6 +151,25 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
             if msg.message == WM_HOTKEY {
                 on_hotkey(msg.wParam.0 as i32);
+                continue;
+            }
+            if msg.message == WM_COMMAND {
+                match msg.wParam.0 & 0xffff {
+                    TRAY_CFG => {
+                        if let Ok(mut app) = state.lock() {
+                            app.show_config = true;
+                        }
+                        raise_config_window();
+                    }
+                    TRAY_EXIT => {
+                        remove_tray_icon(panel);
+                        if let Some(icon) = tray_icon {
+                            let _ = DestroyIcon(icon);
+                        }
+                        std::process::exit(0);
+                    }
+                    _ => {}
+                }
                 continue;
             }
             let _ = TranslateMessage(&msg);
@@ -316,6 +359,7 @@ fn on_hotkey(id: i32) {
     if app.capturing_hotkey {
         return;
     }
+    let raise = id == 2;
     match id {
         1 => app.hud_enabled = !app.hud_enabled,
         2 => app.show_config = true,
@@ -347,6 +391,10 @@ fn on_hotkey(id: i32) {
             }
         }
         _ => {}
+    }
+    drop(app);
+    if raise {
+        raise_config_window();
     }
 }
 
@@ -456,6 +504,197 @@ unsafe fn set_click_through(hwnd: HWND, enabled: bool) {
     SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style as isize);
 }
 
+static LIFT_GEN: AtomicU64 = AtomicU64::new(0);
+static CONFIG_WANTED: AtomicBool = AtomicBool::new(false);
+
+pub fn raise_config_window() {
+    CONFIG_WANTED.store(true, Ordering::Relaxed);
+    let ticket = LIFT_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+    std::thread::Builder::new()
+        .name("poe-config-raise".into())
+        .spawn(move || {
+            let started = Instant::now();
+            let mut placed = false;
+            while started.elapsed() < Duration::from_millis(1_500) {
+                if !config_lift_current(ticket) {
+                    return;
+                }
+                unsafe {
+                    present_config(ticket, &mut placed);
+                }
+                if !config_lift_current(ticket) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(40));
+            }
+        })
+        .ok();
+}
+
+pub fn game_is_open() -> bool {
+    unsafe { find_poe_window().is_some() }
+}
+
+pub fn dismiss_config_window() {
+    CONFIG_WANTED.store(false, Ordering::Relaxed);
+    LIFT_GEN.fetch_add(1, Ordering::Relaxed);
+    unsafe {
+        if let Some(hwnd) = find_config_window() {
+            let _ = SetWindowPos(
+                hwnd,
+                Some(HWND_NOTOPMOST),
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            );
+        }
+        if let Some(game) = find_poe_window() {
+            let _ = SetForegroundWindow(game);
+        }
+    }
+}
+
+fn config_lift_current(ticket: u64) -> bool {
+    CONFIG_WANTED.load(Ordering::Relaxed) && LIFT_GEN.load(Ordering::Relaxed) == ticket
+}
+
+unsafe fn present_config(ticket: u64, placed: &mut bool) {
+    let Some(hwnd) = find_config_window() else {
+        return;
+    };
+    if !config_lift_current(ticket) {
+        return;
+    }
+    let visible = IsWindowVisible(hwnd).as_bool();
+    let iconic = IsIconic(hwnd).as_bool();
+    let foreground = GetForegroundWindow() == hwnd;
+    if visible && !iconic && foreground && *placed {
+        return;
+    }
+    if iconic || !visible {
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let _ = ShowWindow(hwnd, SW_SHOW);
+    }
+    if let Some(game) = find_poe_window() {
+        if !*placed {
+            *placed = move_over_game(hwnd, game);
+        }
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW,
+        );
+    } else {
+        *placed = true;
+    }
+    if GetForegroundWindow() != hwnd {
+        force_foreground(hwnd);
+    }
+    if CONFIG_WANTED.load(Ordering::Relaxed) {
+        return;
+    }
+    let _ = SetWindowPos(
+        hwnd,
+        Some(HWND_NOTOPMOST),
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    );
+    let _ = ShowWindow(hwnd, SW_HIDE);
+    if let Some(game) = find_poe_window() {
+        let _ = SetForegroundWindow(game);
+    }
+}
+
+unsafe fn move_over_game(config: HWND, game: HWND) -> bool {
+    let mut game_rect = RECT::default();
+    let mut config_rect = RECT::default();
+    if GetWindowRect(game, std::ptr::addr_of_mut!(game_rect)).is_err()
+        || GetWindowRect(config, std::ptr::addr_of_mut!(config_rect)).is_err()
+    {
+        return false;
+    }
+    let game_w = game_rect.right - game_rect.left;
+    let game_h = game_rect.bottom - game_rect.top;
+    let window_w = config_rect.right - config_rect.left;
+    let window_h = config_rect.bottom - config_rect.top;
+    if game_rect.left < -10_000
+        || game_rect.top < -10_000
+        || game_w < 200
+        || game_h < 200
+        || window_w < 400
+        || window_h < 300
+    {
+        return false;
+    }
+    let x = if window_w >= game_w {
+        game_rect.left
+    } else {
+        game_rect.left + (game_w - window_w) / 2
+    };
+    let y = if window_h >= game_h {
+        game_rect.top
+    } else {
+        game_rect.top + (game_h - window_h) / 2
+    };
+    SetWindowPos(config, Some(HWND_TOPMOST), x, y, 0, 0, SWP_NOSIZE | SWP_SHOWWINDOW).is_ok()
+}
+
+unsafe fn force_foreground(hwnd: HWND) {
+    let foreground = GetForegroundWindow();
+    let fore_thread = GetWindowThreadProcessId(foreground, None);
+    let this_thread = GetCurrentThreadId();
+    let attached = fore_thread != 0
+        && fore_thread != this_thread
+        && AttachThreadInput(this_thread, fore_thread, true).as_bool();
+    let _ = BringWindowToTop(hwnd);
+    let _ = SetForegroundWindow(hwnd);
+    if attached {
+        let _ = AttachThreadInput(this_thread, fore_thread, false);
+    }
+}
+
+unsafe fn find_config_window() -> Option<HWND> {
+    let mut found = None;
+    let _ = EnumWindows(Some(enum_config_proc), LPARAM(&mut found as *mut _ as isize));
+    found
+}
+
+unsafe extern "system" fn enum_config_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
+    if ex & WS_EX_TOOLWINDOW.0 != 0 {
+        return BOOL(1);
+    }
+    let mut class_name = [0u16; 64];
+    let class_len = GetClassNameW(hwnd, &mut class_name);
+    if class_len > 0 {
+        let class = String::from_utf16_lossy(&class_name[..class_len as usize]);
+        if class == "rusty_exile_overlay" {
+            return BOOL(1);
+        }
+    }
+    let mut title = [0u16; 256];
+    let len = GetWindowTextW(hwnd, &mut title);
+    if len <= 0 {
+        return BOOL(1);
+    }
+    let text = String::from_utf16_lossy(&title[..len as usize]);
+    if text == "RustyExile" {
+        let slot = &mut *(lparam.0 as *mut Option<HWND>);
+        *slot = Some(hwnd);
+        return BOOL(0);
+    }
+    BOOL(1)
+}
+
 unsafe fn find_poe_window() -> Option<HWND> {
     let mut found = None;
     let _ = EnumWindows(Some(enum_proc), LPARAM(&mut found as *mut _ as isize));
@@ -478,6 +717,22 @@ unsafe extern "system" fn enum_proc(hwnd: HWND, lparam: LPARAM) -> BOOL {
 }
 
 unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    if msg == WM_TRAYICON {
+        let mouse = lparam.0 as u32;
+        if mouse == WM_LBUTTONUP {
+            if let Ok(click) = CLICK.lock() {
+                if let Some(app) = &click.app {
+                    if let Ok(mut state) = app.lock() {
+                        state.show_config = true;
+                    }
+                }
+            }
+            raise_config_window();
+        } else if mouse == WM_RBUTTONUP {
+            show_tray_menu(hwnd);
+        }
+        return LRESULT(0);
+    }
     if msg == WM_LBUTTONDOWN {
         on_click(hwnd, lparam);
     }
@@ -487,6 +742,81 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         }
     }
     DefWindowProcW(hwnd, msg, wparam, lparam)
+}
+
+unsafe fn add_tray_icon(hwnd: HWND) -> Option<HICON> {
+    let icon = create_badge_hicon(32)?;
+    let mut nid = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: TRAY_ID,
+        uFlags: NIF_MESSAGE | NIF_ICON | NIF_TIP,
+        uCallbackMessage: WM_TRAYICON,
+        hIcon: icon,
+        ..Default::default()
+    };
+    let tip: Vec<u16> = "RustyExile\0".encode_utf16().collect();
+    let copy = tip.len().min(nid.szTip.len());
+    nid.szTip[..copy].copy_from_slice(&tip[..copy]);
+    if Shell_NotifyIconW(NIM_ADD, &nid).as_bool() {
+        Some(icon)
+    } else {
+        let _ = DestroyIcon(icon);
+        None
+    }
+}
+
+unsafe fn remove_tray_icon(hwnd: HWND) {
+    let nid = NOTIFYICONDATAW {
+        cbSize: size_of::<NOTIFYICONDATAW>() as u32,
+        hWnd: hwnd,
+        uID: TRAY_ID,
+        ..Default::default()
+    };
+    let _ = Shell_NotifyIconW(NIM_DELETE, &nid);
+}
+
+unsafe fn show_tray_menu(hwnd: HWND) {
+    let Ok(menu) = CreatePopupMenu() else {
+        return;
+    };
+    let _ = AppendMenuW(menu, MF_STRING, TRAY_CFG, w!("Config"));
+    let _ = AppendMenuW(menu, MF_STRING, TRAY_EXIT, w!("Exit Rusty"));
+    let mut cursor = POINT::default();
+    let _ = GetCursorPos(std::ptr::addr_of_mut!(cursor));
+    let _ = SetForegroundWindow(hwnd);
+    let _ = TrackPopupMenu(
+        menu,
+        TPM_LEFTALIGN | TPM_RIGHTBUTTON,
+        cursor.x,
+        cursor.y,
+        Some(0),
+        hwnd,
+        None,
+    );
+    let _ = DestroyMenu(menu);
+}
+
+unsafe fn create_badge_hicon(size: u32) -> Option<HICON> {
+    let (width, height, rgba) = poe_data::window_icon_rgba(size)?;
+    let pixel_count = (width * height) as usize;
+    let mut bgra = rgba;
+    let mut mask = Vec::with_capacity(pixel_count);
+    for pixel in bgra.chunks_exact_mut(4) {
+        mask.push(if pixel[3] < 128 { 0xff } else { 0 });
+        pixel.swap(0, 2);
+    }
+    let handle = CreateIcon(
+        None,
+        width as i32,
+        height as i32,
+        1,
+        32,
+        mask.as_ptr(),
+        bgra.as_ptr(),
+    )
+    .ok()?;
+    Some(handle)
 }
 
 fn on_click(hwnd: HWND, lparam: LPARAM) {
@@ -502,6 +832,8 @@ fn on_click(hwnd: HWND, lparam: LPARAM) {
     let Ok(mut app) = app.lock() else { return };
     if hwnd == button {
         app.show_config = true;
+        drop(app);
+        raise_config_window();
         return;
     }
     if hwnd == panel {

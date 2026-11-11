@@ -53,7 +53,8 @@ fn exit_rusty(state: &Mutex<AppState>) {
 }
 
 pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
-    let (width, height, data) = poe_data::tray_icon_argb(32).unwrap_or((32, 32, vec![255, 212, 164, 84].repeat(32 * 32)));
+    let (width, height, data) =
+        poe_data::tray_icon_argb(32).unwrap_or((32, 32, vec![255, 212, 164, 84].repeat(32 * 32)));
     let tray = RustyTray {
         state,
         icon: ksni::Icon { width, height, data },

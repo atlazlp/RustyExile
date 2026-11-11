@@ -8,19 +8,45 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 pub fn run(state: Arc<Mutex<AppState>>) -> eframe::Result {
+    let mut viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1240.0, 820.0])
+        .with_min_inner_size([980.0, 640.0])
+        .with_title("RustyExile")
+        .with_app_id("RustyExile");
+    if let Some(icon) = window_icon() {
+        viewport = viewport.with_icon(icon);
+    }
     eframe::run_native(
         "RustyExile",
         eframe::NativeOptions {
             vsync: false,
-            viewport: egui::ViewportBuilder::default()
-                .with_inner_size([1240.0, 820.0])
-                .with_min_inner_size([980.0, 640.0])
-                .with_title("RustyExile")
-                .with_app_id("RustyExile"),
+            viewport,
             ..Default::default()
         },
         Box::new(|cc| Ok(Box::new(UiApp::new(cc, state)))),
     )
+}
+
+fn window_icon() -> Option<egui::IconData> {
+    let (width, height, rgba) = poe_data::window_icon_rgba(256)?;
+    Some(egui::IconData {
+        rgba,
+        width,
+        height,
+    })
+}
+
+fn ensure_window_icon(ctx: &egui::Context) {
+    static FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let frame = FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if frame == 0 {
+        if let Some(icon) = window_icon() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(std::sync::Arc::new(icon))));
+        }
+    }
+    if frame < 180 {
+        poe_overlay::apply_app_icon();
+    }
 }
 
 struct UiApp {
@@ -165,6 +191,7 @@ impl UiApp {
 impl eframe::App for UiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.ctx = ctx.clone();
+        ensure_window_icon(ctx);
         apply_style(ctx);
         if let Some(rx) = &self.launch_rx {
             if let Ok(note) = rx.try_recv() {
@@ -181,26 +208,34 @@ impl eframe::App for UiApp {
             self.finish_update(outcome);
         }
         let chosen = self.state.lock().map(|s| s.settings.experience_chosen).unwrap_or(false);
-        if !chosen {
-            self.wizard(ctx);
-            return;
-        }
         let show = self.state.lock().map(|s| s.show_config).unwrap_or(false);
         if show {
             if let Some((x, y)) = poe_overlay::config_popup_origin() {
                 ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x as f32, y as f32)));
             }
-            poe_overlay::raise_config_window();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            #[cfg(windows)]
+            if poe_overlay::game_is_open() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+                    egui::viewport::WindowLevel::AlwaysOnTop,
+                ));
+            }
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            #[cfg(not(windows))]
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            poe_overlay::raise_config_window();
             if let Ok(mut state) = self.state.lock() {
                 state.show_config = false;
             }
         }
         if ctx.input(|i| i.viewport().close_requested()) {
-            poe_overlay::dismiss_config_window();
+            self.hide_config(ctx);
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        }
+        if !chosen {
+            ctx.request_repaint_after(std::time::Duration::from_millis(200));
+            self.wizard(ctx);
+            return;
         }
         self.capture_hotkey(ctx);
         ctx.request_repaint_after(std::time::Duration::from_millis(200));
@@ -278,9 +313,18 @@ impl UiApp {
         }
     }
 
+    #[cfg(not(windows))]
     fn close_config(&self) {
+        self.hide_config(&self.ctx);
+    }
+
+    fn hide_config(&self, ctx: &egui::Context) {
         poe_overlay::dismiss_config_window();
-        self.ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
+        #[cfg(windows)]
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(
+            egui::viewport::WindowLevel::Normal,
+        ));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
     fn exit_overlay(&self) {
@@ -419,14 +463,18 @@ impl UiApp {
             |ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
                 ui.vertical(|ui| {
-                    ui.set_width((width - 44.0).max(80.0));
+                    let text_width = if cfg!(windows) { width } else { (width - 44.0).max(80.0) };
+                    ui.set_width(text_width);
                     ui.label(RichText::new(title).size(30.0).strong().color(ink()));
                     ui.add_space(4.0);
                     ui.label(RichText::new(blurb).size(15.0).color(muted()));
                 });
-                let close = egui::Button::new(RichText::new("X").size(20.0).strong().color(ink())).frame(false);
-                if ui.add_sized([36.0, 36.0], close).clicked() {
-                    self.close_config();
+                #[cfg(not(windows))]
+                {
+                    let close = egui::Button::new(RichText::new("X").size(20.0).strong().color(ink())).frame(false);
+                    if ui.add_sized([36.0, 36.0], close).clicked() {
+                        self.close_config();
+                    }
                 }
             },
         );

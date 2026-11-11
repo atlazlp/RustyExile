@@ -19,3 +19,6 @@ ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
 futures-util = { version = "0.3", default-features = false, features = ["std"] }
 ksni = { version = "0.3.7", features = ["blocking"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winres = "0.1"

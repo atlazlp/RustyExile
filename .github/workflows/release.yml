@@ -44,10 +44,26 @@ jobs:
           Copy-Item "${{ matrix.binary }}" (Join-Path $stage "RustyExile.exe")
           Copy-Item -Recurse assets (Join-Path $stage "assets")
           Compress-Archive -Path "$stage\RustyExile.exe", "$stage\assets" -DestinationPath "${{ matrix.asset }}"
+      - name: windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $iscc = Join-Path $env:LOCALAPPDATA "Programs\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            $setup = Join-Path $env:RUNNER_TEMP "innosetup.exe"
+            Invoke-WebRequest -Uri "https://jrsoftware.org/download.php/is.exe" -OutFile $setup
+            Start-Process -FilePath $setup -ArgumentList "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART","/SP-" -Wait
+          }
+          ./packaging/windows/build-installer.ps1 -SkipBuild
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.asset }}
           path: ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v4
+        if: runner.os == 'Windows'
+        with:
+          name: RustyExile-windows-x86_64-setup.exe
+          path: dist/RustyExile-windows-x86_64-setup.exe
 
   publish:
     needs: build
@@ -65,7 +81,7 @@ jobs:
           version="$(awk -F'"' '/^version = / { print $2; exit }' Cargo.toml)"
           tag="v${version}"
           shopt -s nullglob
-          files=(dist/*.zip)
+          files=(dist/*.zip dist/*.exe)
           if [ "${#files[@]}" -eq 0 ]; then
             echo "no release archives were built"
             exit 1

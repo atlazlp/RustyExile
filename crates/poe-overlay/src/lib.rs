@@ -7,6 +7,8 @@ mod linux;
 
 #[cfg(windows)]
 mod win32;
+#[cfg(windows)]
+mod win_icon;
 
 use poe_core::AppState;
 use std::sync::{Arc, Mutex};
@@ -65,20 +67,53 @@ pub fn prepare_config_window() {
     hypr::prepare_config_window();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub fn prepare_config_window() {
+    win32::prepare_process();
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn prepare_config_window() {}
+
+#[cfg(windows)]
+pub fn apply_app_icon() {
+    win_icon::apply_to_titled_windows("RustyExile");
+}
+
+#[cfg(not(windows))]
+pub fn apply_app_icon() {}
 
 #[cfg(target_os = "linux")]
 pub fn dismiss_config_window() {
     hypr::dismiss_config_window();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(windows)]
+pub fn dismiss_config_window() {
+    win32::dismiss_config_window();
+}
+
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn dismiss_config_window() {}
 
 #[cfg(target_os = "linux")]
 pub fn raise_config_window() {
     hypr::raise_config_window();
+}
+
+#[cfg(windows)]
+pub fn raise_config_window() {
+    win32::raise_config_window();
+}
+
+#[cfg(windows)]
+pub fn game_is_open() -> bool {
+    win32::game_is_open()
+}
+
+#[cfg(not(windows))]
+pub fn game_is_open() -> bool {
+    false
 }
 
 #[cfg(target_os = "linux")]
@@ -96,7 +131,7 @@ pub fn pause_for_screenshot() {
     hypr::pause_for_screenshot();
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(any(target_os = "linux", windows)))]
 pub fn raise_config_window() {}
 
 #[cfg(target_os = "linux")]
