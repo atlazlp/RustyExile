@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "RustyExile"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2247,18 +2247,19 @@ dependencies = [
 
 [[package]]
 name = "poe-config"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "arboard",
  "eframe",
  "image",
  "poe-core",
  "poe-data",
+ "poe-overlay",
 ]
 
 [[package]]
 name = "poe-core"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -2275,7 +2276,7 @@ dependencies = [
 
 [[package]]
 name = "poe-data"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "image",
  "poe-core",
@@ -2284,9 +2285,10 @@ dependencies = [
 
 [[package]]
 name = "poe-overlay"
-version = "0.1.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
+ "arboard",
  "cosmic-text",
  "image",
  "libc",

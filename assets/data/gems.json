@@ -2851,7 +2851,7 @@
   "Metadata/Items/Gems/SkillGemFrostblink": {
     "id": "Metadata/Items/Gems/SkillGemFrostblink",
     "name": "Frostblink",
-    "primary_attribute": "intelligence",
+    "primary_attribute": "dexterity",
     "required_level": 4,
     "is_support": false
   },
@@ -4174,7 +4174,7 @@
   "Metadata/Items/Gems/SkillGemFrostblinkRoyale": {
     "id": "Metadata/Items/Gems/SkillGemFrostblinkRoyale",
     "name": "Frostblink",
-    "primary_attribute": "intelligence",
+    "primary_attribute": "dexterity",
     "required_level": 4,
     "is_support": false
   },

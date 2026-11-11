@@ -105,8 +105,6 @@ pub fn parse_line(line: &str) -> Option<LogEvent> {
             let name = name.trim();
             if !name.is_empty() && !name.contains(' ') || name.chars().any(|c| c == '_') || !name.contains(':')
             {
-                // Player names can contain spaces. Reject obvious chat by requiring the exact suffix
-                // and no second colon.
                 if !name.contains(':') {
                     return Some(LogEvent::Slain {
                         name: name.to_string(),

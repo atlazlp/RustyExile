@@ -17,7 +17,9 @@ pub struct AppState {
     pub dirty_regex: bool,
     pub ctrl_down: bool,
     pub alt_down: bool,
+    pub shift_down: bool,
     pub capturing_hotkey: bool,
+    pub hud_placing: bool,
 }
 
 impl AppState {

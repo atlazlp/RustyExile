@@ -19,6 +19,7 @@ smithay-client-toolkit = { version = "0.21", default-features = false }
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+arboard = "3"
 windows = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

@@ -1,8 +1,8 @@
 use eframe::egui::{self, Color32, RichText, TextureHandle, TextureOptions};
 use poe_core::{
-    build_route, fetch_pob, install_build, vendor_gem_regex, visible_lines, AppState, CampaignEvent,
-    CharacterFile, ChatCommand, EventGroup, EventKind, Experience, HudCorner, TriggerKind, UpdateOutcome,
-    VERSION,
+    build_route, fetch_pob, install_build, parse_markup, tone_rgb, vendor_gem_regex, visible_lines, AppState,
+    CampaignEvent, CharacterFile, ChatCommand, EventGroup, EventKind, Experience, Hotkeys, HudCorner, TextTone,
+    TriggerKind, UpdateOutcome, VERSION,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -38,6 +38,7 @@ struct UiApp {
     update_rx: Option<std::sync::mpsc::Receiver<UpdateOutcome>>,
     update_manual: bool,
     start_update: bool,
+    show_skipped: bool,
     ctx: egui::Context,
 }
 
@@ -132,6 +133,7 @@ impl UiApp {
             update_rx: None,
             update_manual: false,
             start_update,
+            show_skipped: false,
             ctx: cc.egui_ctx.clone(),
         }
     }
@@ -185,6 +187,10 @@ impl eframe::App for UiApp {
         }
         let show = self.state.lock().map(|s| s.show_config).unwrap_or(false);
         if show {
+            if let Some((x, y)) = poe_overlay::config_popup_origin() {
+                ctx.send_viewport_cmd(egui::ViewportCommand::OuterPosition(egui::pos2(x as f32, y as f32)));
+            }
+            poe_overlay::raise_config_window();
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             if let Ok(mut state) = self.state.lock() {
@@ -192,6 +198,7 @@ impl eframe::App for UiApp {
             }
         }
         if ctx.input(|i| i.viewport().close_requested()) {
+            poe_overlay::dismiss_config_window();
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
         }
@@ -272,6 +279,7 @@ impl UiApp {
     }
 
     fn close_config(&self) {
+        poe_overlay::dismiss_config_window();
         self.ctx.send_viewport_cmd(egui::ViewportCommand::Visible(false));
     }
 
@@ -458,14 +466,10 @@ impl UiApp {
             ui.add_space(20.0);
             ui.horizontal_wrapped(|ui| self.action_buttons(ui, false));
             ui.add_space(20.0);
-            ui.columns(3, |cols| {
-                for (index, experience) in [Experience::Beginner, Experience::Intermediate, Experience::Advanced]
-                    .into_iter()
-                    .enumerate()
-                {
-                    let column = &mut cols[index];
-                    column.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                    card().show(column, |ui| {
+            let experiences = [Experience::Beginner, Experience::Intermediate, Experience::Advanced];
+            fit_columns(ui, &[1.0, 1.0, 1.0], 16.0, None, |ui, _width, index| {
+                let experience = experiences[index];
+                card().show(ui, |ui| {
                         ui.set_min_height(240.0);
                         ui.label(RichText::new(experience.label()).size(22.0).strong().color(ink()));
                         ui.add_space(12.0);
@@ -478,8 +482,7 @@ impl UiApp {
                                 state.dirty_settings = true;
                             }
                         }
-                    });
-                }
+                });
             });
         });
     }
@@ -487,130 +490,134 @@ impl UiApp {
     fn general(&mut self, ui: &mut egui::Ui) {
         let Ok(mut state) = self.state.lock() else { return };
         let mut schedule_update = false;
-        ui.style_mut().spacing.slider_width = 260.0;
         section(ui, "Profile");
-        ui.columns(3, |cols| {
-            for (index, experience) in [Experience::Beginner, Experience::Intermediate, Experience::Advanced]
-                .into_iter()
-                .enumerate()
-            {
-                let column = &mut cols[index];
-                column.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
-                let selected = state.settings.experience == experience;
-                let mut frame = card();
-                if selected {
-                    frame.stroke = egui::Stroke::new(1.0_f32, accent());
-                }
-                frame.show(column, |ui| {
-                    ui.set_min_height(176.0);
-                    ui.label(
-                        RichText::new(experience.label())
-                            .size(18.0)
-                            .strong()
-                            .color(if selected { accent() } else { ink() }),
-                    );
-                    ui.add_space(8.0);
-                    ui.label(RichText::new(experience.explanation()).color(muted()));
-                    ui.add_space(12.0);
-                    if selected {
-                        ui.label(RichText::new("Current profile").color(accent()));
-                    } else if ui.button(format!("Use {}", experience.label())).clicked() {
-                        state.settings.apply_experience(experience);
-                        state.dirty_settings = true;
-                    }
-                });
+        let experiences = [Experience::Beginner, Experience::Intermediate, Experience::Advanced];
+        fit_columns(ui, &[1.0, 1.0, 1.0], 16.0, None, |ui, _width, index| {
+            let experience = experiences[index];
+            let selected = state.settings.experience == experience;
+            let mut frame = card();
+            if selected {
+                frame.stroke = egui::Stroke::new(1.0_f32, accent());
             }
+            frame.show(ui, |ui| {
+                ui.set_min_height(176.0);
+                ui.label(
+                    RichText::new(experience.label())
+                        .size(18.0)
+                        .strong()
+                        .color(if selected { accent() } else { ink() }),
+                );
+                ui.add_space(8.0);
+                ui.label(RichText::new(experience.explanation()).color(muted()));
+                ui.add_space(12.0);
+                if selected {
+                    ui.label(RichText::new("Current profile").color(accent()));
+                } else if ui.button(format!("Use {}", experience.label())).clicked() {
+                    state.settings.apply_experience(experience);
+                    state.dirty_settings = true;
+                }
+            });
         });
 
         section(ui, "Overlay");
-        card().show(ui, |ui| {
-            egui::Grid::new("overlay_toggles")
-                .num_columns(2)
-                .spacing(egui::vec2(28.0, 12.0))
-                .show(ui, |ui| {
-                    let tips = ui.checkbox(&mut state.settings.tips, "Zone tips").changed();
-                    let acts = ui.checkbox(&mut state.settings.acts, "Act list").changed();
-                    ui.end_row();
-                    let gems = ui.checkbox(&mut state.settings.gems, "Gem list").changed();
-                    let league = ui.checkbox(&mut state.settings.league_start, "League-start route").changed();
-                    ui.end_row();
-                    let landmarks = ui.checkbox(&mut state.settings.show_landmarks, "Landmarks").changed();
-                    let hud = ui.checkbox(&mut state.hud_enabled, "Show while the game is focused").changed();
-                    ui.end_row();
-                    let was_auto = state.settings.auto_update;
-                    let auto = ui.checkbox(&mut state.settings.auto_update, "Automatic updates").changed();
-                    ui.end_row();
-                    if tips || acts || gems || league || landmarks || hud || auto {
-                        state.dirty_settings = true;
-                    }
-                    schedule_update = auto && state.settings.auto_update && !was_auto;
-                });
+        fit_columns(ui, &[1.0, 1.0, 1.0], 16.0, None, |ui, _width, index| match index {
+            0 => option_card(ui, "Campaign", |ui| {
+                let tips = toggle(ui, &mut state.settings.tips, "Zone tips");
+                let acts = toggle(ui, &mut state.settings.acts, "Act list");
+                let gems = toggle(ui, &mut state.settings.gems, "Gem list");
+                let league = toggle(ui, &mut state.settings.league_start, "League-start route");
+                mark(&mut state.dirty_settings, tips || acts || gems || league);
+            }),
+            1 => option_card(ui, "Window", |ui| {
+                let landmarks = toggle(ui, &mut state.settings.show_landmarks, "Landmarks");
+                let hud = toggle(ui, &mut state.hud_enabled, "Show while the game is focused");
+                let config_button = toggle(ui, &mut state.settings.show_config_button, "Config button at the top of the game");
+                mark(&mut state.dirty_settings, landmarks || hud || config_button);
+            }),
+            _ => option_card(ui, "Updates", |ui| {
+                let was_auto = state.settings.auto_update;
+                let changed = toggle(ui, &mut state.settings.auto_update, "Automatic updates");
+                mark(&mut state.dirty_settings, changed);
+                schedule_update = changed && state.settings.auto_update && !was_auto;
+            }),
         });
 
-        section(ui, "Appearance");
-        card().show(ui, |ui| {
-            egui::Grid::new("appearance")
-                .num_columns(2)
-                .spacing(egui::vec2(24.0, 16.0))
-                .show(ui, |ui| {
-                    ui.label("Opacity");
-                    if ui.add(egui::Slider::new(&mut state.settings.opacity, 0.2..=1.0)).changed() {
-                        state.dirty_settings = true;
-                    }
-                    ui.end_row();
-                    ui.label("Scale");
-                    if ui.add(egui::Slider::new(&mut state.settings.scale, 0.7..=2.0)).changed() {
-                        state.dirty_settings = true;
-                    }
-                    ui.end_row();
-                    ui.label("Corner");
-                    ui.vertical(|ui| {
+        fit_columns(ui, &[1.65, 0.75], 16.0, None, |ui, _width, index| {
+            if index == 0 {
+                section(ui, "Appearance");
+                card().show(ui, |ui| {
+                    let inner = ui.available_width();
+                    ui.set_max_width(inner);
+                    labeled(ui, inner, "Opacity", |ui, control_w| {
+                        if fit_slider(ui, control_w, &mut state.settings.opacity, 0.2..=1.0) {
+                            state.dirty_settings = true;
+                        }
+                    });
+                    ui.add_space(8.0);
+                    labeled(ui, inner, "Scale", |ui, control_w| {
+                        if fit_slider(ui, control_w, &mut state.settings.scale, 0.7..=2.0) {
+                            state.dirty_settings = true;
+                        }
+                    });
+                    ui.add_space(8.0);
+                    labeled(ui, inner, "Corner", |ui, _| {
                         corner_pair(ui, &mut state, [HudCorner::TopLeft, HudCorner::TopRight]);
                         corner_pair(ui, &mut state, [HudCorner::BottomLeft, HudCorner::BottomRight]);
+                        let custom_on = state.hud_placing || state.settings.corner == HudCorner::Custom;
+                        if ui.selectable_label(custom_on, "Custom").clicked() {
+                            state.hud_placing = true;
+                        }
+                        if state.hud_placing {
+                            ui.label(RichText::new("Drag the events window, then click Confirm.").size(12.0).color(muted()));
+                        }
                     });
-                    ui.end_row();
-                    if color_row(ui, "Background", &mut state.settings.theme.background) {
-                        state.dirty_settings = true;
-                    }
-                    ui.end_row();
-                    if color_row(ui, "Text", &mut state.settings.theme.text) {
-                        state.dirty_settings = true;
-                    }
-                    ui.end_row();
-                    if color_row(ui, "Accent", &mut state.settings.theme.accent) {
-                        state.dirty_settings = true;
-                    }
-                    ui.end_row();
+                    ui.add_space(8.0);
+                    labeled(ui, inner, "Background", |ui, _| {
+                        if color_button(ui, &mut state.settings.theme.background) {
+                            state.dirty_settings = true;
+                        }
+                    });
+                    ui.add_space(8.0);
+                    labeled(ui, inner, "Text", |ui, _| {
+                        if color_button(ui, &mut state.settings.theme.text) {
+                            state.dirty_settings = true;
+                        }
+                    });
+                    ui.add_space(8.0);
+                    labeled(ui, inner, "Accent", |ui, _| {
+                        if color_button(ui, &mut state.settings.theme.accent) {
+                            state.dirty_settings = true;
+                        }
+                    });
                 });
-        });
-
-        section(ui, "Game");
-        card().show(ui, |ui| {
-            if let Some(install) = &state.settings.install {
-                field(ui, "Install", &format!("{:?}", install.kind));
-                field(ui, "Folder", &install.install_dir);
-                field(ui, "Log", &install.log_path);
-            } else if let Some(running) = &state.running {
-                field(ui, "Detected", &format!("{:?} at {}", running.kind, running.install_dir.display()));
             } else {
-                ui.label(RichText::new("Path of Exile is not running. The folder and log path are saved the next time it is detected.").color(muted()));
-            }
-            ui.add_space(8.0);
-            let mut override_path = state.settings.log_path_override.clone().unwrap_or_default();
-            egui::Grid::new("log_override").num_columns(2).spacing(egui::vec2(16.0, 8.0)).show(ui, |ui| {
-                ui.label("Log override");
-                let edit = line_edit(&mut override_path).desired_width(360.0);
-                if ui.add(edit).changed() {
-                    state.settings.log_path_override = if override_path.is_empty() { None } else { Some(override_path) };
-                    state.dirty_settings = true;
-                }
-                ui.end_row();
-            });
-            ui.add_space(8.0);
-            ui.hyperlink_to("poe-leveling.com", &state.settings.poe_leveling_url);
-            if !state.status.is_empty() {
-                ui.add_space(8.0);
-                ui.label(state.status.as_str());
+                section(ui, "Game");
+                card().show(ui, |ui| {
+                    let inner = ui.available_width();
+                    ui.set_max_width(inner);
+                    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                    if let Some(install) = &state.settings.install {
+                        field(ui, "Install", &format!("{:?}", install.kind));
+                        field(ui, "Folder", &install.install_dir);
+                        field(ui, "Log", &install.log_path);
+                    } else if let Some(running) = &state.running {
+                        field(ui, "Detected", &format!("{:?} at {}", running.kind, running.install_dir.display()));
+                    } else {
+                        ui.label(RichText::new("Path of Exile is not running. The folder and log path are saved the next time it is detected.").color(muted()));
+                    }
+                    ui.add_space(8.0);
+                    ui.label("Log override");
+                    let mut override_path = state.settings.log_path_override.clone().unwrap_or_default();
+                    let edit = line_edit(&mut override_path).desired_width(inner).clip_text(true);
+                    if ui.add_sized([inner, 36.0], edit).changed() {
+                        state.settings.log_path_override = if override_path.is_empty() { None } else { Some(override_path) };
+                        state.dirty_settings = true;
+                    }
+                    if !state.status.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(state.status.as_str());
+                    }
+                });
             }
         });
         drop(state);
@@ -635,6 +642,8 @@ impl UiApp {
                     self.hotkey_row(ui, "Toggle overlay", "toggle_hud");
                     self.hotkey_row(ui, "Open configuration", "open_config");
                     self.hotkey_row(ui, "Paste vendor regex", "paste_regex");
+                    self.hotkey_row(ui, "Previous events", "events_back");
+                    self.hotkey_row(ui, "Next events", "events_forward");
                     self.hotkey_row(ui, "Clear-task modifiers", "clear_modifiers");
                 });
         });
@@ -648,12 +657,7 @@ impl UiApp {
     }
 
     fn hotkey_row(&mut self, ui: &mut egui::Ui, label: &str, field: &'static str) {
-        let current = self.state.lock().ok().map(|s| match field {
-            "toggle_hud" => s.settings.hotkeys.toggle_hud.clone(),
-            "open_config" => s.settings.hotkeys.open_config.clone(),
-            "paste_regex" => s.settings.hotkeys.paste_regex.clone(),
-            _ => s.settings.hotkeys.clear_modifiers.clone(),
-        }).unwrap_or_default();
+        let current = self.state.lock().ok().map(|s| builtin_hotkey(&s.settings.hotkeys, field)).unwrap_or_default();
         ui.label(RichText::new(label).size(15.0));
         ui.label(RichText::new(current).monospace().size(15.0).color(accent()));
         if ui.add_sized([108.0, 32.0], egui::Button::new("Change")).clicked() {
@@ -772,10 +776,7 @@ impl UiApp {
             }
             if let Ok(mut state) = self.state.lock() {
                 match field {
-                    Capture::Builtin("toggle_hud") => state.settings.hotkeys.toggle_hud = chord,
-                    Capture::Builtin("open_config") => state.settings.hotkeys.open_config = chord,
-                    Capture::Builtin("paste_regex") => state.settings.hotkeys.paste_regex = chord,
-                    Capture::Builtin(_) => state.settings.hotkeys.clear_modifiers = chord,
+                    Capture::Builtin(name) => set_builtin_hotkey(&mut state.settings.hotkeys, name, chord),
                     Capture::Chat(id) => {
                         if let Some(cmd) = state.settings.hotkeys.chat.iter_mut().find(|cmd| cmd.id == id) {
                             cmd.hotkey = chord;
@@ -797,50 +798,124 @@ impl UiApp {
         let mut drop_pair = None;
         let mut edit: Option<CampaignEvent> = None;
         self.groups(ui, gems);
-        let reserve = if self.selected.is_some() { 280.0 } else { 0.0 };
-        let max_h = (ui.available_height() - reserve).max(180.0);
-        egui::ScrollArea::vertical().max_height(max_h).show(ui, |ui| {
-            for act in 1..=10u8 {
-                let events: Vec<_> = character.route.events.iter().filter(|e| e.act == act && e.kind.is_gem() == gems).cloned().collect();
-                if events.is_empty() && gems {
-                    continue;
-                }
-                egui::CollapsingHeader::new(RichText::new(format!("Act {act}")).strong()).default_open(act == 1).show(ui, |ui| {
-                    for event in events {
-                        let icon = if event.gem_name.is_some() { format!("gem:{}", event.gem_name.as_deref().unwrap_or("")) } else { event.icon.clone() };
-                        ui.horizontal(|ui| {
-                            self.icon_ui(ui, &icon, 22.0);
-                            if event.kind == EventKind::GemBuy {
-                                self.icon_ui(ui, "wisdom", 14.0);
-                            }
-                            let response = ui.add(egui::Label::new(&event.text).sense(egui::Sense::click_and_drag()));
-                            if response.drag_started() {
-                                response.dnd_set_drag_payload(event.id.clone());
-                            }
-                            if let Some(payload) = response.dnd_release_payload::<String>() {
-                                if payload.as_str() != event.id {
-                                    drop_pair = Some((payload.to_string(), event.id.clone()));
+        let height = ui.available_height().max(240.0);
+        let list_salt = if gems { "gem-events" } else { "act-events" };
+        let edit_salt = if gems { "gem-editor" } else { "act-editor" };
+        fit_columns(ui, &[0.8, 1.2], 16.0, Some(height), |ui, width, index| {
+            if index == 0 {
+                egui::ScrollArea::vertical()
+                    .id_salt(list_salt)
+                    .auto_shrink([false, false])
+                    .max_height(height)
+                    .show(ui, |ui| {
+                        ui.set_max_width(ui.available_width());
+                        for act in 1..=10u8 {
+                                let events: Vec<_> = character
+                                    .route
+                                    .events
+                                    .iter()
+                                    .filter(|e| e.act == act && e.kind.is_gem() == gems)
+                                    .cloned()
+                                    .collect();
+                                if events.is_empty() && gems {
+                                    continue;
                                 }
-                            }
-                            if ui.button("Edit").clicked() {
-                                self.selected = Some(event.id.clone());
-                            }
-                            if ui.button("Delete").clicked() {
-                                delete_id = Some(event.id.clone());
+                                egui::CollapsingHeader::new(RichText::new(format!("Act {act}")).strong())
+                                    .default_open(act == 1)
+                                    .show(ui, |ui| {
+                                        for event in events {
+                                            let selected = self.selected.as_deref() == Some(event.id.as_str());
+                                            let mut row = egui::Frame::NONE.inner_margin(egui::Margin::symmetric(8, 4));
+                                            if selected {
+                                                row.fill = Color32::from_rgba_unmultiplied(212, 164, 84, 36);
+                                                row.corner_radius = egui::CornerRadius::same(6);
+                                            }
+                                            row.show(ui, |ui| {
+                                                let row_w = ui.available_width();
+                                                ui.set_max_width(row_w);
+                                                ui.spacing_mut().item_spacing.y = 4.0;
+                                                ui.horizontal(|ui| {
+                                                    ui.set_max_width(row_w);
+                                                    let icon = if event.gem_name.is_some() {
+                                                        format!("gem:{}", event.gem_name.as_deref().unwrap_or(""))
+                                                    } else {
+                                                        event.icon.clone()
+                                                    };
+                                                    self.icon_ui(ui, &icon, 22.0);
+                                                    let extra = if event.kind == EventKind::GemBuy {
+                                                        self.icon_ui(ui, "wisdom", 14.0);
+                                                        22.0
+                                                    } else {
+                                                        0.0
+                                                    };
+                                                    let text_w = (ui.available_width() - extra).max(40.0);
+                                                    let response = ui.add_sized(
+                                                        [text_w, 24.0],
+                                                        egui::Label::new(markup_job(&event.text, text_w))
+                                                            .sense(egui::Sense::click_and_drag())
+                                                            .truncate(),
+                                                    );
+                                                    if response.drag_started() {
+                                                        response.dnd_set_drag_payload(event.id.clone());
+                                                    }
+                                                    if let Some(payload) = response.dnd_release_payload::<String>() {
+                                                        if payload.as_str() != event.id {
+                                                            drop_pair = Some((payload.to_string(), event.id.clone()));
+                                                        }
+                                                    }
+                                                });
+                                                let button_w = (ui.available_width() - 16.0).max(40.0);
+                                                ui.allocate_ui_with_layout(
+                                                    egui::vec2(button_w, 32.0),
+                                                    egui::Layout::right_to_left(egui::Align::Min),
+                                                    |ui| {
+                                                        if ui
+                                                            .add_sized(
+                                                                [108.0, 32.0],
+                                                                egui::Button::new("Delete").wrap_mode(egui::TextWrapMode::Extend),
+                                                            )
+                                                            .clicked()
+                                                        {
+                                                            delete_id = Some(event.id.clone());
+                                                        }
+                                                        let mut edit_button = ui.add_sized(
+                                                            [84.0, 32.0],
+                                                            egui::Button::new("Edit").wrap_mode(egui::TextWrapMode::Extend),
+                                                        );
+                                                        if self.selected.is_none() {
+                                                            edit_button = edit_button.on_hover_text("Choose Edit on a step. The form stays on this side.");
+                                                        }
+                                                        if edit_button.clicked() {
+                                                            self.selected = Some(event.id.clone());
+                                                        }
+                                                    },
+                                                );
+                                            });
+                                            if selected {
+                                                edit = Some(event);
+                                            }
+                                        }
+                                    });
                             }
                         });
-                        ui.add_space(4.0);
-                        if self.selected.as_deref() == Some(event.id.as_str()) {
-                            edit = Some(event);
+            } else {
+                let pane = (width - 24.0).max(80.0);
+                egui::ScrollArea::vertical()
+                    .id_salt(edit_salt)
+                    .auto_shrink([false, false])
+                    .max_height(height)
+                    .show(ui, |ui| {
+                        ui.set_max_width(pane);
+                        if let Some(event) = &edit {
+                            card().show(ui, |ui| {
+                                let inner = (pane - 36.0).max(40.0);
+                                ui.set_max_width(inner);
+                                self.edit_event(ui, event, inner);
+                            });
                         }
-                    }
-                });
+                    });
             }
         });
-        if let Some(event) = edit {
-            ui.add_space(12.0);
-            card().show(ui, |ui| self.edit_event(ui, &event));
-        }
         if delete_id.is_some() || drop_pair.is_some() {
             if let Ok(mut state) = self.state.lock() {
                 if let Some(character) = state.active_character_mut() {
@@ -884,58 +959,61 @@ impl UiApp {
             return;
         }
         egui::CollapsingHeader::new("Groups").show(ui, |ui| {
-            ui.label("Drop one event onto another to make a named group. Its start trigger shows every event in the group.");
+            ui.add(
+                egui::Label::new("Drop one event onto another to make a named group. Its start trigger shows every event in the group.")
+                    .wrap_mode(egui::TextWrapMode::Wrap),
+            );
             for (id, mut name, mut start) in groups {
                 ui.horizontal(|ui| {
                     ui.label("Name");
-                    if ui.add(line_edit(&mut name)).changed() {
-                        let id = id.clone();
-                        if let Ok(mut state) = self.state.lock() {
-                            if let Some(character) = state.active_character_mut() {
-                                if let Some(group) = character.route.groups.iter_mut().find(|group| group.id == id) {
-                                    group.name = name;
-                                    character.user_edited = true;
-                                }
-                            }
-                            state.dirty_characters = true;
-                        }
+                    let name_w = (ui.available_width() - 8.0).max(40.0);
+                    if ui.add_sized([name_w, 36.0], line_edit(&mut name).desired_width(name_w).clip_text(true)).changed() {
+                        self.edit_group(&id, |group| group.name = name);
                     }
                 });
-                if trigger_list(ui, &mut start) {
-                    if let Ok(mut state) = self.state.lock() {
-                        if let Some(character) = state.active_character_mut() {
-                            if let Some(group) = character.route.groups.iter_mut().find(|group| group.id == id) {
-                                group.start = start;
-                                character.user_edited = true;
-                            }
-                        }
-                        state.dirty_characters = true;
-                    }
+                let trigger_w = ui.available_width();
+                if trigger_list(ui, &mut start, trigger_w) {
+                    self.edit_group(&id, |group| group.start = start);
                 }
             }
         });
     }
 
-    fn edit_event(&mut self, ui: &mut egui::Ui, event: &CampaignEvent) {
+    fn edit_group(&self, id: &str, change: impl FnOnce(&mut EventGroup)) {
+        let Ok(mut state) = self.state.lock() else { return };
+        if let Some(character) = state.active_character_mut() {
+            if let Some(group) = character.route.groups.iter_mut().find(|group| group.id == id) {
+                change(group);
+                character.user_edited = true;
+            }
+        }
+        state.dirty_characters = true;
+    }
+
+    fn edit_event(&mut self, ui: &mut egui::Ui, event: &CampaignEvent, width: f32) {
+        ui.set_width(width);
         ui.label(RichText::new("Edit event").size(16.0).strong().color(ink()));
         ui.add_space(8.0);
         let mut text = event.text.clone();
         let mut detail = event.detail.clone();
         let mut changed = false;
-        egui::Grid::new("edit_event").num_columns(2).spacing(egui::vec2(16.0, 12.0)).show(ui, |ui| {
-            ui.label("Text");
-            changed |= ui.add(line_edit(&mut text).desired_width(420.0)).changed();
-            ui.end_row();
-            ui.label("Tip");
-            changed |= ui.add(line_edit(&mut detail).desired_width(420.0)).changed();
-            ui.end_row();
-        });
+        ui.label("Text");
+        changed |= ui
+            .add_sized([width, 36.0], line_edit(&mut text).desired_width(width).clip_text(true))
+            .on_hover_text("{loc} location    {item} quest item    {red} {green} {blue} gems")
+            .changed();
+        ui.add_space(8.0);
+        ui.label("Tip");
+        changed |= ui
+            .add_sized([width, 36.0], line_edit(&mut detail).desired_width(width).clip_text(true))
+            .changed();
+        ui.add_space(8.0);
         ui.label("Start triggers");
         let mut start = event.start.clone();
         let mut end = event.end.clone();
-        changed |= trigger_list(ui, &mut start);
+        changed |= trigger_list(ui, &mut start, width);
         ui.label("End triggers");
-        changed |= trigger_list(ui, &mut end);
+        changed |= trigger_list(ui, &mut end, width);
         if changed {
             if let Ok(mut state) = self.state.lock() {
                 if let Some(character) = state.active_character_mut() {
@@ -949,6 +1027,34 @@ impl UiApp {
                 }
                 state.dirty_characters = true;
             }
+        }
+    }
+
+    fn skipped_events(&mut self, ui: &mut egui::Ui) {
+        let snapshot = self.state.lock().ok().and_then(|state| state.active_character().cloned());
+        let Some(character) = snapshot else {
+            ui.label(RichText::new("Select a character first.").color(muted()));
+            return;
+        };
+        if character.progress.skipped_groups.is_empty() {
+            ui.label(RichText::new("No areas have been skipped.").color(muted()));
+            return;
+        }
+        let events = character.route.events.clone();
+        for id in &character.progress.skipped_groups {
+            let Some(group) = character.route.groups.iter().find(|group| &group.id == id) else {
+                continue;
+            };
+            card().show(ui, |ui| {
+                ui.label(RichText::new(format!("Act {}  {}", group.act, group.name)).strong().color(accent()));
+                for event_id in &group.event_ids {
+                    let Some(event) = events.iter().find(|event| &event.id == event_id) else {
+                        continue;
+                    };
+                    ui.label(markup_job(&event.text, ui.available_width()));
+                }
+            });
+            ui.add_space(8.0);
         }
     }
 
@@ -982,6 +1088,16 @@ impl UiApp {
                 });
             });
             ui.add_space(8.0);
+        }
+        let skipped = self.state.lock().ok().and_then(|state| {
+            state.active_character().map(|character| character.progress.skipped_groups.len())
+        }).unwrap_or(0);
+        if ui.button(format!("Skipped Events ({skipped})")).clicked() {
+            self.show_skipped = !self.show_skipped;
+        }
+        if self.show_skipped {
+            ui.add_space(8.0);
+            self.skipped_events(ui);
         }
         section(ui, "Import");
         ui.label(RichText::new("Paste a Path of Building Community link, usually pobb.in or pastebin. Campaign gems from that build are added to the character.").color(muted()));
@@ -1136,9 +1252,7 @@ impl UiApp {
                 if !query.is_empty() && !quest.name.to_ascii_lowercase().contains(&query) {
                     continue;
                 }
-                let id_w = (full * 0.28).clamp(220.0, 460.0);
-                let npc_w = (full * 0.30).clamp(200.0, 420.0);
-                let name_w = (full - id_w - npc_w - 32.0).max(240.0);
+                let (id_w, name_w, npc_w) = split3(full, 0.28, full * 0.30);
                 let stripe = shown % 2 == 0;
                 let mut edited = false;
                 striped(ui, stripe, |ui| {
@@ -1157,15 +1271,15 @@ impl UiApp {
     }
 
     fn landmarks(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("These are optional. Flooded Depths, the Chemist's strongbox, the Karui Fortress tattoos, and the Ossuary Facetor's Lens start on. The hint appears on the overlay while you are in the zone.").color(muted()));
-            if ui.button("Restore defaults").clicked() {
-                if let Ok(mut state) = self.state.lock() {
-                    state.settings.landmarks = poe_core::default_landmarks();
-                    state.dirty_settings = true;
-                }
+        let restore = ui.button("Restore defaults").on_hover_text(
+            "These are optional. Flooded Depths, the Chemist's strongbox, the Karui Fortress tattoos, and the Ossuary Facetor's Lens start on. The hint appears on the overlay while you are in the zone.",
+        );
+        if restore.clicked() {
+            if let Ok(mut state) = self.state.lock() {
+                state.settings.landmarks = poe_core::default_landmarks();
+                state.dirty_settings = true;
             }
-        });
+        }
         ui.add_space(12.0);
         let mut landmarks = self.state.lock().ok().map(|s| s.settings.landmarks.clone()).unwrap_or_default();
         let mut changed = false;
@@ -1295,8 +1409,129 @@ impl UiApp {
     }
 }
 
-fn color_row(ui: &mut egui::Ui, label: &str, color: &mut [u8; 4]) -> bool {
-    ui.label(label);
+fn column_widths(total: f32, weights: &[f32], gap: f32) -> Vec<f32> {
+    let count = weights.len();
+    if count == 0 {
+        return Vec::new();
+    }
+    let usable = (total - gap * (count - 1) as f32).max(0.0);
+    let sum = weights.iter().sum::<f32>().max(f32::EPSILON);
+    let mut widths: Vec<f32> = weights.iter().map(|weight| (usable * weight / sum).max(0.0)).collect();
+    let assigned = widths.iter().sum::<f32>();
+    if let Some(last) = widths.last_mut() {
+        *last = (*last + (usable - assigned)).max(0.0);
+    }
+    widths
+}
+
+fn fit_columns(ui: &mut egui::Ui, weights: &[f32], gap: f32, height: Option<f32>, mut add: impl FnMut(&mut egui::Ui, f32, usize)) {
+    let total = ui.available_width().max(0.0);
+    let widths = column_widths(total, weights, gap);
+    let origin = ui.cursor().min;
+    let fixed_bottom = height.map(|height| origin.y + height);
+    let mut used_bottom = origin.y;
+    for (index, width) in widths.iter().copied().enumerate() {
+        let x = origin.x + widths[..index].iter().sum::<f32>() + gap * index as f32;
+        let y_bottom = fixed_bottom.unwrap_or(origin.y + 1.0e6);
+        let rect = egui::Rect::from_min_max(egui::pos2(x, origin.y), egui::pos2(x + width, y_bottom));
+        let mut child = ui.new_child(
+            egui::UiBuilder::new()
+                .id_salt(("fit", index, origin.y.to_bits()))
+                .max_rect(rect)
+                .layout(egui::Layout::top_down(egui::Align::Min)),
+        );
+        let mut clip = child.clip_rect();
+        clip.min.x = clip.min.x.max(rect.min.x);
+        clip.max.x = clip.max.x.min(rect.max.x);
+        if let Some(bottom) = fixed_bottom {
+            clip.min.y = clip.min.y.max(origin.y);
+            clip.max.y = clip.max.y.min(bottom);
+        }
+        child.set_clip_rect(clip);
+        child.set_max_width(width);
+        add(&mut child, width, index);
+        let content_bottom = child.min_rect().bottom();
+        if content_bottom.is_finite() {
+            used_bottom = used_bottom.max(content_bottom);
+        }
+    }
+    let used_height = match fixed_bottom {
+        Some(bottom) => (bottom - origin.y).max(0.0),
+        None => (used_bottom - origin.y).max(0.0),
+    };
+    ui.advance_cursor_after_rect(egui::Rect::from_min_size(origin, egui::vec2(total, used_height)));
+}
+
+fn labeled(ui: &mut egui::Ui, width: f32, label: &str, add: impl FnOnce(&mut egui::Ui, f32)) {
+    let label_w = 88.0_f32.min(width * 0.4);
+    let gap = 12.0;
+    let control_w = (width - label_w - gap).max(0.0);
+    ui.horizontal(|ui| {
+        ui.set_max_width(width);
+        ui.spacing_mut().item_spacing.x = gap;
+        ui.add_sized([label_w, 24.0], egui::Label::new(label).truncate());
+        ui.allocate_ui_with_layout(
+            egui::vec2(control_w, 0.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                ui.set_max_width(control_w);
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+                add(ui, control_w);
+            },
+        );
+    });
+}
+
+fn fit_slider(ui: &mut egui::Ui, width: f32, value: &mut f32, range: std::ops::RangeInclusive<f32>) -> bool {
+    let value_w = 84.0;
+    let gap = 8.0;
+    ui.spacing_mut().slider_width = (width - value_w - gap).max(48.0);
+    ui.spacing_mut().item_spacing.x = gap;
+    ui.add(egui::Slider::new(value, range).max_decimals(2)).changed()
+}
+
+fn option_card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    card().show(ui, |ui| {
+        ui.label(RichText::new(title).strong().color(accent()));
+        ui.add_space(8.0);
+        ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Wrap);
+        add(ui);
+    });
+}
+
+fn toggle(ui: &mut egui::Ui, value: &mut bool, label: &str) -> bool {
+    ui.checkbox(value, label).changed()
+}
+
+fn mark(dirty: &mut bool, changed: bool) {
+    if changed {
+        *dirty = true;
+    }
+}
+
+fn builtin_hotkey(hotkeys: &Hotkeys, field: &str) -> String {
+    match field {
+        "toggle_hud" => hotkeys.toggle_hud.clone(),
+        "open_config" => hotkeys.open_config.clone(),
+        "paste_regex" => hotkeys.paste_regex.clone(),
+        "events_back" => hotkeys.events_back.clone(),
+        "events_forward" => hotkeys.events_forward.clone(),
+        _ => hotkeys.clear_modifiers.clone(),
+    }
+}
+
+fn set_builtin_hotkey(hotkeys: &mut Hotkeys, field: &str, chord: String) {
+    match field {
+        "toggle_hud" => hotkeys.toggle_hud = chord,
+        "open_config" => hotkeys.open_config = chord,
+        "paste_regex" => hotkeys.paste_regex = chord,
+        "events_back" => hotkeys.events_back = chord,
+        "events_forward" => hotkeys.events_forward = chord,
+        _ => hotkeys.clear_modifiers = chord,
+    }
+}
+
+fn color_button(ui: &mut egui::Ui, color: &mut [u8; 4]) -> bool {
     let mut c = Color32::from_rgba_unmultiplied(color[0], color[1], color[2], color[3]);
     let changed = ui.color_edit_button_srgba(&mut c).changed();
     if changed {
@@ -1306,16 +1541,22 @@ fn color_row(ui: &mut egui::Ui, label: &str, color: &mut [u8; 4]) -> bool {
 }
 
 fn corner_pair(ui: &mut egui::Ui, state: &mut AppState, corners: [HudCorner; 2]) {
-    ui.horizontal(|ui| {
+    let width = ui.available_width();
+    ui.set_max_width(width);
+    ui.horizontal_wrapped(|ui| {
+        ui.set_max_width(width);
         for corner in corners {
             let label = match corner {
                 HudCorner::TopLeft => "Top left",
                 HudCorner::TopRight => "Top right",
                 HudCorner::BottomLeft => "Bottom left",
                 HudCorner::BottomRight => "Bottom right",
+                HudCorner::Custom => "Custom",
             };
-            if ui.selectable_label(state.settings.corner == corner, label).clicked() {
+            let selected = !state.hud_placing && state.settings.corner == corner;
+            if ui.selectable_label(selected, label).clicked() {
                 state.settings.corner = corner;
+                state.hud_placing = false;
                 state.dirty_settings = true;
             }
         }
@@ -1323,25 +1564,31 @@ fn corner_pair(ui: &mut egui::Ui, state: &mut AppState, corners: [HudCorner; 2])
 }
 
 fn field(ui: &mut egui::Ui, label: &str, value: &str) {
-    ui.horizontal(|ui| {
-        ui.add_sized([88.0, 18.0], egui::Label::new(RichText::new(label).color(muted())));
-        ui.label(value);
+    ui.vertical(|ui| {
+        ui.label(RichText::new(label).color(muted()).size(12.0));
+        ui.add(egui::Label::new(value).wrap_mode(egui::TextWrapMode::Wrap));
     });
 }
 
 fn split3(full: f32, id_share: f32, tail: f32) -> (f32, f32, f32) {
-    let id_w = (full * id_share).clamp(220.0, 520.0);
-    let name_w = (full - id_w - tail - 32.0).max(240.0);
-    (id_w, name_w, tail)
+    let usable = (full - 32.0).max(0.0);
+    let mut id_w = (usable * id_share).min(520.0).max(0.0);
+    let mut tail_w = tail.min(usable * 0.4).max(0.0);
+    let mut name_w = (usable - id_w - tail_w).max(0.0);
+    let sum = id_w + name_w + tail_w;
+    if sum > usable && sum > 0.0 {
+        let scale = usable / sum;
+        id_w *= scale;
+        name_w *= scale;
+        tail_w *= scale;
+    }
+    (id_w, name_w, tail_w)
 }
 
 fn table_head(ui: &mut egui::Ui, titles: &[&str]) {
     let full = ui.available_width();
     let (id_w, name_w, tail_w) = if titles.len() == 3 && titles[2] == "NPC" {
-        let id_w = (full * 0.28).clamp(220.0, 460.0);
-        let npc_w = (full * 0.30).clamp(200.0, 420.0);
-        let name_w = (full - id_w - npc_w - 32.0).max(240.0);
-        (id_w, name_w, npc_w)
+        split3(full, 0.28, full * 0.30)
     } else if titles.len() == 3 && titles[2] == "Act" {
         split3(full, 0.38, 96.0)
     } else {
@@ -1370,7 +1617,7 @@ fn striped(ui: &mut egui::Ui, on: bool, add: impl FnOnce(&mut egui::Ui)) {
         frame.corner_radius = egui::CornerRadius::same(8);
     }
     frame.show(ui, |ui| {
-        ui.set_min_width(width - 16.0);
+        ui.set_width((width - 16.0).max(0.0));
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 16.0;
             add(ui);
@@ -1444,6 +1691,37 @@ fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(10.0);
     ui.label(RichText::new(title).size(16.0).strong().color(accent()));
     ui.add_space(10.0);
+}
+
+fn markup_job(text: &str, width: f32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.wrap.max_width = width;
+    let spans = parse_markup(text);
+    let spans = if spans.is_empty() {
+        vec![poe_core::TextSpan {
+            text: text.to_string(),
+            tone: TextTone::Plain,
+        }]
+    } else {
+        spans
+    };
+    for span in spans {
+        job.append(
+            &span.text,
+            0.0,
+            egui::TextFormat {
+                color: match span.tone {
+                    TextTone::Plain => ink(),
+                    TextTone::Location => accent(),
+                    _ => tone_rgb(span.tone)
+                        .map(|[r, g, b]| Color32::from_rgb(r, g, b))
+                        .unwrap_or_else(ink),
+                },
+                ..Default::default()
+            },
+        );
+    }
+    job
 }
 
 fn ink() -> Color32 {
@@ -1527,23 +1805,36 @@ fn apply_style(ctx: &egui::Context) {
     });
 }
 
-fn trigger_list(ui: &mut egui::Ui, triggers: &mut Vec<TriggerKind>) -> bool {
+fn trigger_list(ui: &mut egui::Ui, triggers: &mut Vec<TriggerKind>, budget: f32) -> bool {
+    let width = budget.min(ui.available_width()).max(0.0);
     let mut changed = false;
     let mut delete = None;
     for (index, trigger) in triggers.iter_mut().enumerate() {
+        let label_w = 108.0_f32.min(width * 0.42);
+        let button_w = 32.0;
+        let field_w = (width - label_w - button_w - 24.0).max(36.0);
         ui.horizontal(|ui| {
-            ui.label(trigger.label());
+            ui.set_max_width(width);
+            ui.add_sized([label_w, 24.0], egui::Label::new(trigger.label()).truncate());
             match trigger {
-                TriggerKind::ZoneEnter { area_id } => changed |= ui.add(line_edit(area_id)).changed(),
-                TriggerKind::ZoneName { name } => changed |= ui.add(line_edit(name)).changed(),
-                TriggerKind::ActStart { act } | TriggerKind::ActEnd { act } => {
-                    changed |= ui.add(egui::DragValue::new(act).range(1..=10)).changed();
+                TriggerKind::ZoneEnter { area_id } => {
+                    changed |= ui.add_sized([field_w, 36.0], line_edit(area_id).desired_width(field_w).clip_text(true)).changed();
                 }
-                TriggerKind::LevelAtLeast { level } => changed |= ui.add(egui::DragValue::new(level)).changed(),
-                TriggerKind::PassiveAllocated { id } => changed |= ui.add(line_edit(id)).changed(),
+                TriggerKind::ZoneName { name } => {
+                    changed |= ui.add_sized([field_w, 36.0], line_edit(name).desired_width(field_w).clip_text(true)).changed();
+                }
+                TriggerKind::ActStart { act } | TriggerKind::ActEnd { act } => {
+                    changed |= ui.add_sized([field_w, 36.0], egui::DragValue::new(act).range(1..=10)).changed();
+                }
+                TriggerKind::LevelAtLeast { level } => {
+                    changed |= ui.add_sized([field_w, 36.0], egui::DragValue::new(level)).changed();
+                }
+                TriggerKind::PassiveAllocated { id } => {
+                    changed |= ui.add_sized([field_w, 36.0], line_edit(id).desired_width(field_w).clip_text(true)).changed();
+                }
                 TriggerKind::Manual => {}
             }
-            if ui.button("x").clicked() {
+            if ui.add_sized([button_w, 32.0], egui::Button::new("x")).clicked() {
                 delete = Some(index);
             }
         });
@@ -1578,4 +1869,25 @@ fn group_drop(route: &mut poe_core::CharacterRoute, from: &str, onto: &str) {
         start,
         event_ids: vec![onto.to_string(), from.to_string()],
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::column_widths;
+
+    #[test]
+    fn columns_fill_the_budget_without_overlap() {
+        let gap = 16.0;
+        let total = 936.0;
+        let widths = column_widths(total, &[1.0, 1.0], gap);
+        let used = widths.iter().sum::<f32>() + gap;
+        assert!((used - total).abs() < 0.01);
+        assert!(widths.iter().all(|width| *width > 0.0));
+        let editor = column_widths(total, &[0.8, 1.2], 16.0);
+        assert!((editor.iter().sum::<f32>() + 16.0 - total).abs() < 0.01);
+        assert!(editor[1] > editor[0]);
+        let general = column_widths(total, &[1.65, 0.75], 16.0);
+        assert!(general[0] > general[1] * 1.8);
+        assert!((general.iter().sum::<f32>() + 16.0 - total).abs() < 0.01);
+    }
 }

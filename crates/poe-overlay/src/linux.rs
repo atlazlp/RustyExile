@@ -20,7 +20,7 @@ use smithay_client_toolkit::shm::slot::SlotPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use std::os::fd::AsRawFd;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     let conn = Connection::connect_to_env().context("wayland connection")?;
@@ -48,22 +48,19 @@ pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         hits: Vec::new(),
         bound_output: None,
         button_layer: None,
-        last_ipc: Instant::now() - Duration::from_secs(1),
-        cached_window: None,
-        cached_monitors: Vec::new(),
-        cached_cursor: None,
+        layer_ready: false,
+        button_ready: false,
+        pending: None,
+        pending_button: None,
+        cache: start_cache(),
+        drag: None,
+        panel_origin: (16, 16),
+        panel_limit: (i32::MAX, i32::MAX),
     };
     loop {
         dispatch_timeout(&conn, &mut queue, &mut app, 40)?;
         app.sync(&qh);
-        if !running(&app.shared) && app.layer.is_none() {
-            // Config UI can keep running with no game. Stay idle.
-        }
     }
-}
-
-fn running(shared: &Mutex<AppState>) -> bool {
-    shared.lock().map(|s| s.running.is_some() && s.hud_enabled && s.settings.experience_chosen).unwrap_or(false)
 }
 
 fn dispatch_timeout(
@@ -109,9 +106,20 @@ struct HudSnap {
     opacity: f32,
     scale: f32,
     corner: poe_core::HudCorner,
+    custom_x: Option<i32>,
+    custom_y: Option<i32>,
+    placing: bool,
+    show_config_button: bool,
     theme: poe_core::Theme,
     capture: bool,
     lines: Vec<poe_core::VisibleLine>,
+}
+
+struct PanelDrag {
+    cursor_x: i32,
+    cursor_y: i32,
+    origin_x: i32,
+    origin_y: i32,
 }
 
 struct Overlay {
@@ -132,14 +140,147 @@ struct Overlay {
     hits: Vec<crate::draw::Hit>,
     bound_output: Option<u32>,
     button_layer: Option<LayerSurface>,
-    last_ipc: Instant,
-    cached_window: Option<GameWindow>,
-    cached_monitors: Vec<Monitor>,
-    cached_cursor: Option<(i32, i32)>,
+    layer_ready: bool,
+    button_ready: bool,
+    pending: Option<PendingPaint>,
+    pending_button: Option<PendingPaint>,
+    cache: Arc<Mutex<HudCache>>,
+    drag: Option<PanelDrag>,
+    panel_origin: (i32, i32),
+    panel_limit: (i32, i32),
+}
+
+#[derive(Clone)]
+struct PendingPaint {
+    width: u32,
+    height: u32,
+    bgra: Vec<u8>,
+    hits: Vec<crate::draw::Hit>,
+    interactive: bool,
+}
+
+struct HudCache {
+    window: Option<GameWindow>,
+    monitors: Vec<Monitor>,
+    cursor: Option<(i32, i32)>,
+}
+
+fn start_cache() -> Arc<Mutex<HudCache>> {
+    let cache = Arc::new(Mutex::new(HudCache {
+        window: None,
+        monitors: Vec::new(),
+        cursor: None,
+    }));
+    let background = Arc::clone(&cache);
+    std::thread::Builder::new()
+        .name("poe-overlay-ipc".into())
+        .spawn(move || {
+            loop {
+                if hypr::screenshot_paused() {
+                    std::thread::sleep(Duration::from_millis(30));
+                    continue;
+                }
+                let window = hypr::game_window().filter(|window| window.w > 0 && window.h > 0);
+                let monitors = if window.is_some() { hypr::monitors() } else { Vec::new() };
+                let cursor = if window.is_some() { hypr::cursor() } else { None };
+                if let Ok(mut slot) = background.lock() {
+                    slot.window = window;
+                    slot.monitors = monitors;
+                    slot.cursor = cursor;
+                }
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        })
+        .ok();
+    cache
 }
 
 impl Overlay {
+    fn follow_drag(&mut self) {
+        let Some(drag) = self.drag.as_ref() else {
+            return;
+        };
+        let (origin_x, origin_y, cursor_x, cursor_y) = (drag.origin_x, drag.origin_y, drag.cursor_x, drag.cursor_y);
+        let limit = self.panel_limit;
+        let Some((cx, cy)) = hypr::cursor() else {
+            return;
+        };
+        let nx = (origin_x + cx - cursor_x).clamp(0, limit.0);
+        let ny = (origin_y + cy - cursor_y).clamp(0, limit.1);
+        let Ok(mut shared) = self.shared.lock() else {
+            return;
+        };
+        if !shared.hud_placing {
+            drop(shared);
+            self.drag = None;
+            return;
+        }
+        shared.settings.custom_x = Some(nx);
+        shared.settings.custom_y = Some(ny);
+    }
+
+    fn confirm_place(&mut self) {
+        self.drag = None;
+        let Ok(mut shared) = self.shared.lock() else {
+            return;
+        };
+        if shared.settings.custom_x.is_none() {
+            shared.settings.custom_x = Some(self.panel_origin.0);
+            shared.settings.custom_y = Some(self.panel_origin.1);
+        }
+        shared.settings.corner = poe_core::HudCorner::Custom;
+        shared.hud_placing = false;
+        shared.dirty_settings = true;
+    }
+
+    fn press_panel(&mut self, x: i32, y: i32) {
+        let placing = self.shared.lock().map(|shared| shared.hud_placing).unwrap_or(false);
+        if placing {
+            let confirm = self.hits.iter().any(|hit| {
+                hit.id == "confirm" && x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h
+            });
+            if confirm {
+                self.confirm_place();
+                return;
+            }
+            let (ox, oy) = self.shared.lock().map(|shared| {
+                (
+                    shared.settings.custom_x.unwrap_or(self.panel_origin.0),
+                    shared.settings.custom_y.unwrap_or(self.panel_origin.1),
+                )
+            }).unwrap_or(self.panel_origin);
+            if let Ok(mut shared) = self.shared.lock() {
+                shared.settings.custom_x = Some(ox);
+                shared.settings.custom_y = Some(oy);
+            }
+            let (cx, cy) = hypr::cursor().unwrap_or((0, 0));
+            self.drag = Some(PanelDrag {
+                cursor_x: cx,
+                cursor_y: cy,
+                origin_x: ox,
+                origin_y: oy,
+            });
+            return;
+        }
+        let hit = self.hits.iter().find(|hit| {
+            x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h
+        });
+        let Some(hit) = hit else { return };
+        let Ok(mut shared) = self.shared.lock() else { return };
+        if shared.ctrl_down && shared.alt_down {
+            if let Some(character) = shared.active_character_mut() {
+                poe_core::force_complete(&mut character.progress, &hit.id);
+                shared.dirty_characters = true;
+            }
+        }
+    }
+
     fn sync(&mut self, qh: &QueueHandle<Self>) {
+        self.follow_drag();
+        if hypr::capture_suppressed() {
+            self.unmap();
+            return;
+        }
         let snap = {
             let Ok(shared) = self.shared.lock() else {
                 return;
@@ -149,6 +290,10 @@ impl Overlay {
                 opacity: shared.settings.opacity,
                 scale: shared.settings.scale,
                 corner: shared.settings.corner,
+                custom_x: shared.settings.custom_x,
+                custom_y: shared.settings.custom_y,
+                placing: shared.hud_placing,
+                show_config_button: shared.settings.show_config_button,
                 theme: shared.settings.theme.clone(),
                 capture: shared.ctrl_down && shared.alt_down,
                 lines: shared
@@ -176,33 +321,47 @@ impl Overlay {
             self.unmap();
             return;
         }
-        if self.last_ipc.elapsed() > Duration::from_millis(200) {
-            self.cached_window = hypr::game_window().filter(|w| w.focused && w.w > 0 && w.h > 0);
-            self.cached_monitors = if self.cached_window.is_some() { hypr::monitors() } else { Vec::new() };
-            self.cached_cursor = if self.cached_window.is_some() { hypr::cursor() } else { None };
-            self.last_ipc = Instant::now();
-        }
-        let Some(window) = self.cached_window.clone() else {
+        let (window, monitors, cursor) = {
+            let Ok(cache) = self.cache.lock() else {
+                return;
+            };
+            (cache.window.clone(), cache.monitors.clone(), cache.cursor)
+        };
+        let Some(window) = window else {
             self.unmap();
             return;
         };
-        let monitors = self.cached_monitors.clone();
-        let cursor = self.cached_cursor;
-        let near_button = cursor.is_some_and(|(x, y)| near_top_center(&window, x, y));
+        let near_button = snap.show_config_button
+            && !snap.placing
+            && cursor.is_some_and(|(x, y)| near_top_center(&window, x, y));
+        let custom = match (snap.custom_x, snap.custom_y) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        };
         let sig = format!(
-            "{}:{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             window.x,
             window.y,
             window.w,
             window.h,
             near_button,
             snap.opacity,
-            snap.corner as u8
+            snap.corner as u8,
+            snap.placing,
+            custom.map(|(x, _)| x).unwrap_or(-1),
+            custom.map(|(_, y)| y).unwrap_or(-1)
         );
         let line_sig = snap.lines.iter().map(|l| l.event_id.clone()).collect::<Vec<_>>().join("|");
         let full_sig = format!("{sig}|{}|{line_sig}", snap.capture);
-        let output = pick_output(&self.output_state, &window, &monitors);
-        let output_id = output.as_ref().and_then(|output| self.output_state.info(output).map(|info| info.id));
+        let Some(output) = pick_output(&self.output_state, &window, &monitors) else {
+            self.unmap();
+            return;
+        };
+        let Some((ox, oy)) = monitor_origin(&window, &monitors) else {
+            self.unmap();
+            return;
+        };
+        let output_id = self.output_state.info(&output).map(|info| info.id);
         if self.layer.is_some() && output_id.is_some() && self.bound_output != output_id {
             self.unmap();
         }
@@ -218,24 +377,43 @@ impl Overlay {
                 snap.scale,
                 snap.corner,
                 near_button,
+                custom,
+                snap.placing,
             );
             let [px, py, pw, ph] = frame.panel;
-            let (ox, oy) = monitor_origin(&window, &monitors);
-            self.ensure_layer(qh, output.clone(), window.x - ox + px, window.y - oy + py, pw.max(1) as u32, ph.max(1) as u32);
-            self.present(qh, frame.width, frame.height, &frame.bgra, &frame.hits, snap.capture);
+            self.panel_origin = (px, py);
+            self.panel_limit = ((window.w as i32 - pw).max(0), (window.h as i32 - ph).max(0));
+            self.ensure_layer(qh, &output, window.x - ox + px, window.y - oy + py, pw.max(1) as u32, ph.max(1) as u32);
+            self.pending = Some(PendingPaint {
+                width: frame.width,
+                height: frame.height,
+                bgra: frame.bgra,
+                hits: frame.hits.clone(),
+                interactive: snap.capture || snap.placing,
+            });
             self.hits = frame.hits;
+            self.flush_layer(qh);
             if let Some(button) = frame.button {
                 self.ensure_button(
                     qh,
-                    output,
+                    &output,
                     window.x - ox + button.x,
                     window.y - oy + button.y,
                     button.w,
                     button.h,
                 );
-                self.present_button(button.w, button.h, &button.bgra);
+                self.pending_button = Some(PendingPaint {
+                    width: button.w,
+                    height: button.h,
+                    bgra: button.bgra,
+                    hits: Vec::new(),
+                    interactive: false,
+                });
+                self.flush_button(qh);
             } else {
                 self.button_layer = None;
+                self.button_ready = false;
+                self.pending_button = None;
             }
         }
     }
@@ -243,7 +421,7 @@ impl Overlay {
     fn ensure_layer(
         &mut self,
         qh: &QueueHandle<Self>,
-        output: Option<wl_output::WlOutput>,
+        output: &wl_output::WlOutput,
         x: i32,
         y: i32,
         width: u32,
@@ -254,14 +432,15 @@ impl Overlay {
             let layer = self.layer_shell.create_layer_surface(
                 qh,
                 surface,
-                Layer::Top,
+                Layer::Overlay,
                 Some("RustyExile"),
-                output.as_ref(),
+                Some(output),
             );
             layer.set_anchor(Anchor::TOP | Anchor::LEFT);
             layer.set_keyboard_interactivity(KeyboardInteractivity::None);
             layer.set_exclusive_zone(0);
             self.layer = Some(layer);
+            self.layer_ready = false;
         }
         if let Some(layer) = &self.layer {
             place_layer(layer, x, y, width, height);
@@ -271,7 +450,7 @@ impl Overlay {
     fn ensure_button(
         &mut self,
         qh: &QueueHandle<Self>,
-        output: Option<wl_output::WlOutput>,
+        output: &wl_output::WlOutput,
         x: i32,
         y: i32,
         width: u32,
@@ -282,14 +461,15 @@ impl Overlay {
             let layer = self.layer_shell.create_layer_surface(
                 qh,
                 surface,
-                Layer::Top,
+                Layer::Overlay,
                 Some("RustyExile-config"),
-                output.as_ref(),
+                Some(output),
             );
             layer.set_anchor(Anchor::TOP | Anchor::LEFT);
             layer.set_keyboard_interactivity(KeyboardInteractivity::None);
             layer.set_exclusive_zone(0);
             self.button_layer = Some(layer);
+            self.button_ready = false;
         }
         if let Some(layer) = &self.button_layer {
             place_layer(layer, x, y, width, height);
@@ -299,57 +479,59 @@ impl Overlay {
     fn unmap(&mut self) {
         self.layer = None;
         self.button_layer = None;
+        self.layer_ready = false;
+        self.button_ready = false;
+        self.pending = None;
+        self.pending_button = None;
         self.last_sig.clear();
         self.hits.clear();
     }
 
-    fn present(
-        &mut self,
-        qh: &QueueHandle<Self>,
-        width: u32,
-        height: u32,
-        bgra: &[u8],
-        hits: &[crate::draw::Hit],
-        capture_tasks: bool,
-    ) {
-        let Some(layer) = &self.layer else {
+    fn flush_layer(&mut self, qh: &QueueHandle<Self>) {
+        let Some(layer) = self.layer.clone() else {
             return;
         };
-        let stride = width as i32 * 4;
-        let Ok((buffer, canvas)) = self.pool.create_buffer(
-            width as i32,
-            height as i32,
-            stride,
-            wl_shm::Format::Argb8888,
-        ) else {
+        if !self.layer_ready {
+            layer.commit();
+            return;
+        }
+        let Some(paint) = self.pending.clone() else {
             return;
         };
-        let copy = bgra.len().min(canvas.len());
-        canvas[..copy].copy_from_slice(&bgra[..copy]);
-        let surface = layer.wl_surface().clone();
-        set_input_region(&self.compositor, qh, &surface, hits, capture_tasks);
-        surface.damage_buffer(0, 0, width as i32, height as i32);
-        let _ = buffer.attach_to(&surface);
-        layer.commit();
+        self.attach(&layer, qh, &paint, true);
     }
 
-    fn present_button(&mut self, width: u32, height: u32, bgra: &[u8]) {
-        let Some(layer) = &self.button_layer else {
+    fn flush_button(&mut self, qh: &QueueHandle<Self>) {
+        let Some(layer) = self.button_layer.clone() else {
             return;
         };
-        let stride = width as i32 * 4;
+        if !self.button_ready {
+            layer.commit();
+            return;
+        }
+        let Some(paint) = self.pending_button.clone() else {
+            return;
+        };
+        self.attach(&layer, qh, &paint, false);
+    }
+
+    fn attach(&mut self, layer: &LayerSurface, qh: &QueueHandle<Self>, paint: &PendingPaint, input: bool) {
+        let stride = paint.width as i32 * 4;
         let Ok((buffer, canvas)) = self.pool.create_buffer(
-            width as i32,
-            height as i32,
+            paint.width as i32,
+            paint.height as i32,
             stride,
             wl_shm::Format::Argb8888,
         ) else {
             return;
         };
-        let copy = bgra.len().min(canvas.len());
-        canvas[..copy].copy_from_slice(&bgra[..copy]);
+        let copy = paint.bgra.len().min(canvas.len());
+        canvas[..copy].copy_from_slice(&paint.bgra[..copy]);
         let surface = layer.wl_surface().clone();
-        surface.damage_buffer(0, 0, width as i32, height as i32);
+        if input {
+            set_input_region(&self.compositor, qh, &surface, &paint.hits, paint.interactive);
+        }
+        surface.damage_buffer(0, 0, paint.width as i32, paint.height as i32);
         let _ = buffer.attach_to(&surface);
         layer.commit();
     }
@@ -360,10 +542,10 @@ fn set_input_region(
     qh: &QueueHandle<Overlay>,
     surface: &wl_surface::WlSurface,
     hits: &[crate::draw::Hit],
-    capture_tasks: bool,
+    interactive: bool,
 ) {
     let region = compositor.wl_compositor().create_region(qh, RegionData);
-    if capture_tasks {
+    if interactive {
         for hit in hits {
             region.add(hit.x, hit.y, hit.w, hit.h);
         }
@@ -377,13 +559,15 @@ fn place_layer(layer: &LayerSurface, x: i32, y: i32, width: u32, height: u32) {
     layer.set_margin(y, 0, 0, x);
 }
 
-fn monitor_origin(window: &GameWindow, monitors: &[Monitor]) -> (i32, i32) {
-    let monitor = monitors.iter().find(|m| m.id == window.monitor).or_else(|| {
-        monitors.iter().find(|m| {
-            window.x >= m.x && window.y >= m.y && window.x < m.x + m.w && window.y < m.y + m.h
-        })
-    });
-    monitor.map(|m| (m.x, m.y)).unwrap_or((0, 0))
+fn monitor_origin(window: &GameWindow, monitors: &[Monitor]) -> Option<(i32, i32)> {
+    let monitor = monitors.iter().find(|monitor| monitor.id == window.monitor).or_else(|| {
+        monitors.iter().find(|monitor| contains_window(window, monitor))
+    })?;
+    Some((monitor.x, monitor.y))
+}
+
+fn contains_window(window: &GameWindow, monitor: &Monitor) -> bool {
+    window.x >= monitor.x && window.y >= monitor.y && window.x < monitor.x + monitor.w && window.y < monitor.y + monitor.h
 }
 
 fn near_top_center(window: &GameWindow, x: i32, y: i32) -> bool {
@@ -393,26 +577,21 @@ fn near_top_center(window: &GameWindow, x: i32, y: i32) -> bool {
 }
 
 fn pick_output(outputs: &OutputState, window: &GameWindow, monitors: &[Monitor]) -> Option<wl_output::WlOutput> {
-    let monitor = monitors.iter().find(|monitor| {
-        window.x >= monitor.x
-            && window.y >= monitor.y
-            && window.x < monitor.x + monitor.w
-            && window.y < monitor.y + monitor.h
-    });
-    let all: Vec<_> = outputs.outputs().collect();
-    if let Some(monitor) = monitor {
-        for output in &all {
-            let Some(info) = outputs.info(output) else { continue };
-            if info.name.as_deref() == Some(monitor.name.as_str()) {
-                return Some(output.clone());
-            }
-            let (x, y) = info.logical_position.unwrap_or(info.location);
-            if x == monitor.x && y == monitor.y {
-                return Some(output.clone());
-            }
+    let monitor = monitors
+        .iter()
+        .find(|monitor| monitor.id == window.monitor)
+        .or_else(|| monitors.iter().find(|monitor| contains_window(window, monitor)))?;
+    for output in outputs.outputs() {
+        let Some(info) = outputs.info(&output) else { continue };
+        if info.name.as_deref() == Some(monitor.name.as_str()) {
+            return Some(output);
+        }
+        let (x, y) = info.logical_position.unwrap_or(info.location);
+        if x == monitor.x && y == monitor.y {
+            return Some(output);
         }
     }
-    all.into_iter().next()
+    None
 }
 
 impl CompositorHandler for Overlay {
@@ -446,8 +625,8 @@ impl LayerShellHandler for Overlay {
     fn configure(
         &mut self,
         _: &Connection,
-        _: &QueueHandle<Self>,
-        _: &LayerSurface,
+        qh: &QueueHandle<Self>,
+        layer: &LayerSurface,
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
@@ -456,6 +635,13 @@ impl LayerShellHandler for Overlay {
         }
         if configure.new_size.1 > 0 {
             self.height = configure.new_size.1;
+        }
+        if self.layer.as_ref() == Some(layer) {
+            self.layer_ready = true;
+            self.flush_layer(qh);
+        } else if self.button_layer.as_ref() == Some(layer) {
+            self.button_ready = true;
+            self.flush_button(qh);
         }
     }
 }
@@ -489,34 +675,30 @@ impl PointerHandler for Overlay {
         events: &[PointerEvent],
     ) {
         for event in events {
-            let PointerEventKind::Press { button, .. } = event.kind else {
-                continue;
-            };
-            if button != 0x110 {
-                continue;
-            }
             let x = event.position.0 as i32;
             let y = event.position.1 as i32;
             let on_button = self
                 .button_layer
                 .as_ref()
                 .is_some_and(|layer| layer.wl_surface().id() == event.surface.id());
-            if on_button {
-                if let Ok(mut shared) = self.shared.lock() {
-                    shared.show_config = true;
+            let on_layer = self
+                .layer
+                .as_ref()
+                .is_some_and(|layer| layer.wl_surface().id() == event.surface.id());
+            match event.kind {
+                PointerEventKind::Press { button, .. } if button == 0x110 && on_button => {
+                    crate::hypr::raise_config_window();
+                    if let Ok(mut shared) = self.shared.lock() {
+                        shared.show_config = true;
+                    }
                 }
-                continue;
-            }
-            let hit = self.hits.iter().find(|hit| {
-                x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h
-            });
-            let Some(hit) = hit else { continue };
-            let Ok(mut shared) = self.shared.lock() else { continue };
-            if shared.ctrl_down && shared.alt_down {
-                if let Some(character) = shared.active_character_mut() {
-                    poe_core::force_complete(&mut character.progress, &hit.id);
-                    shared.dirty_characters = true;
+                PointerEventKind::Press { button, .. } if button == 0x110 && on_layer => {
+                    self.press_panel(x, y);
                 }
+                PointerEventKind::Release { button, .. } if button == 0x110 => {
+                    self.drag = None;
+                }
+                _ => {}
             }
         }
     }

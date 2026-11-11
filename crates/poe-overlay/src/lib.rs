@@ -56,16 +56,66 @@ pub fn paste_into_game() -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "linux")]
-pub fn send_chat() -> anyhow::Result<()> {
-    hypr::send_chat()
+pub fn send_chat(text: &str) -> anyhow::Result<()> {
+    hypr::send_chat(text)
 }
 
+#[cfg(target_os = "linux")]
+pub fn prepare_config_window() {
+    hypr::prepare_config_window();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn prepare_config_window() {}
+
+#[cfg(target_os = "linux")]
+pub fn dismiss_config_window() {
+    hypr::dismiss_config_window();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn dismiss_config_window() {}
+
+#[cfg(target_os = "linux")]
+pub fn raise_config_window() {
+    hypr::raise_config_window();
+}
+
+#[cfg(target_os = "linux")]
+pub fn config_popup_origin() -> Option<(i32, i32)> {
+    hypr::config_popup_origin()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn config_popup_origin() -> Option<(i32, i32)> {
+    None
+}
+
+#[cfg(target_os = "linux")]
+pub fn pause_for_screenshot() {
+    hypr::pause_for_screenshot();
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn raise_config_window() {}
+
+#[cfg(target_os = "linux")]
+pub fn sync_config_bind(previous: &str, next: &str) {
+    hypr::sync_config_bind(previous, next);
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn sync_config_bind(_previous: &str, _next: &str) {}
+
 #[cfg(windows)]
-pub fn send_chat() -> anyhow::Result<()> {
+pub fn send_chat(text: &str) -> anyhow::Result<()> {
+    let mut clipboard = arboard::Clipboard::new()?;
+    clipboard.set_text(text.to_owned())?;
+    drop(clipboard);
     win32::send_chat()
 }
 
 #[cfg(not(any(target_os = "linux", windows)))]
-pub fn send_chat() -> anyhow::Result<()> {
+pub fn send_chat(_text: &str) -> anyhow::Result<()> {
     anyhow::bail!("chat hotkeys are wired for Hyprland and Windows");
 }

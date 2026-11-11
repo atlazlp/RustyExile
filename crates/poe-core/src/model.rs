@@ -40,6 +40,7 @@ pub enum HudCorner {
     TopRight,
     BottomLeft,
     BottomRight,
+    Custom,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -128,8 +129,11 @@ pub struct Hotkeys {
     pub toggle_hud: String,
     pub open_config: String,
     pub paste_regex: String,
-    /// Modifiers held while clicking a task to clear it. The click is separate.
     pub clear_modifiers: String,
+    #[serde(default = "default_events_back")]
+    pub events_back: String,
+    #[serde(default = "default_events_forward")]
+    pub events_forward: String,
     #[serde(default = "default_chat_commands")]
     pub chat: Vec<ChatCommand>,
 }
@@ -141,9 +145,19 @@ impl Default for Hotkeys {
             open_config: "ctrl+shift+o".into(),
             paste_regex: "ctrl+shift+v".into(),
             clear_modifiers: "ctrl+alt".into(),
+            events_back: default_events_back(),
+            events_forward: default_events_forward(),
             chat: default_chat_commands(),
         }
     }
+}
+
+fn default_events_back() -> String {
+    "ctrl+shift+left".into()
+}
+
+fn default_events_forward() -> String {
+    "ctrl+shift+right".into()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -163,6 +177,12 @@ pub struct Settings {
     pub opacity: f32,
     pub scale: f32,
     pub corner: HudCorner,
+    #[serde(default)]
+    pub custom_x: Option<i32>,
+    #[serde(default)]
+    pub custom_y: Option<i32>,
+    #[serde(default = "default_show_config_button")]
+    pub show_config_button: bool,
     pub theme: Theme,
     pub hotkeys: Hotkeys,
     pub log_path_override: Option<String>,
@@ -187,6 +207,10 @@ fn default_auto_update() -> bool {
     true
 }
 
+fn default_show_config_button() -> bool {
+    true
+}
+
 impl Default for Settings {
     fn default() -> Self {
         Self {
@@ -198,13 +222,16 @@ impl Default for Settings {
             opacity: 0.92,
             scale: 1.0,
             corner: HudCorner::TopRight,
+            custom_x: None,
+            custom_y: None,
+            show_config_button: true,
             theme: Theme::default(),
             hotkeys: Hotkeys::default(),
             log_path_override: None,
             league_start: true,
             install: None,
             active_character: None,
-            active_regex: 0,
+            active_regex: crate::regexes::default_regex_index(),
             poe_leveling_url: "https://poe-leveling.com/".into(),
             show_landmarks: true,
             auto_update: true,
@@ -333,6 +360,12 @@ pub struct CharacterProgress {
     pub passives: BTreeSet<String>,
     pub completed: BTreeSet<String>,
     pub highest_act: u8,
+    #[serde(default)]
+    pub trial_gems: bool,
+    #[serde(default)]
+    pub skipped_groups: Vec<String>,
+    #[serde(default)]
+    pub view_delta: i32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

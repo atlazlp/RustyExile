@@ -6,6 +6,26 @@ I am a senior developer. RustyExile was developed with the assistance of an LLM.
 
 This is a fan tool. It is not affiliated with or endorsed by Grinding Gear Games.
 
+## Screenshots
+
+<table>
+<tr>
+<td><img src="docs/screenshots/general-top.png" width="320" alt="General, top of the page"><br>General, top</td>
+<td><img src="docs/screenshots/general-bottom.png" width="320" alt="General, bottom of the page"><br>General, bottom</td>
+<td><img src="docs/screenshots/hotkeys.png" width="320" alt="Hotkeys"><br>Hotkeys</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/acts.png" width="320" alt="Acts"><br>Acts</td>
+<td><img src="docs/screenshots/gems.png" width="320" alt="Gems"><br>Gems</td>
+<td><img src="docs/screenshots/builds.png" width="320" alt="Builds"><br>Builds</td>
+</tr>
+<tr>
+<td><img src="docs/screenshots/database.png" width="320" alt="Database"><br>Database</td>
+<td><img src="docs/screenshots/regex.png" width="320" alt="Regex"><br>Regex</td>
+<td><img src="docs/screenshots/landmarks.png" width="320" alt="Landmarks"><br>Landmarks</td>
+</tr>
+</table>
+
 ## Install
 
 Clone the repository, open that folder, and run the installer for your system. Each script asks before it installs anything. It installs Rust when Rust is missing, installs the libraries the build needs, and builds the release program. The first build can take several minutes.
@@ -55,7 +75,7 @@ Zone entry shows the step or gem that starts in that zone, and hides it when the
 | Paste the vendor regex | Ctrl+Shift+V |
 | Clear a task | Ctrl+Alt+click |
 
-On Hyprland, the paste hotkey copies the regex and sends Ctrl+A, Ctrl+V to the game window.
+On Hyprland, the paste hotkey copies the regex and sends Ctrl+A, Ctrl+V to the game window. Chat hotkeys such as Hideout paste the whole command into chat and then remove that clipboard entry.
 
 ## Updates
 

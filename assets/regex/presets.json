@@ -1,34 +1,34 @@
 [
   {
-    "name": "2H Melee (RRG + MS boots)",
-    "regex": "-\\w-.-|r-r-|-r-r|r-.-r|g-g-|-g-g|g-.-g|Runn|rint"
+    "name": "3-link (any colour)",
+    "regex": "\".-.-.\""
   },
   {
-    "name": "Caster (BBB + MS boots)",
-    "regex": "-\\w-.-|b-b-|-b-b|b-.-b|Runn|rint"
+    "name": "4-link (any colour)",
+    "regex": "\".-.-.-.\""
   },
   {
-    "name": "Bow / Dex (GGG + MS boots)",
-    "regex": "-\\w-.-|g-g-|-g-g|g-.-g|Runn|rint"
+    "name": "Movement speed",
+    "regex": "\"movement speed\""
   },
   {
-    "name": "Spellcaster (BBG + MS boots)",
-    "regex": "-\\w-.-|b-b-|-b-b|b-.-b|g-g-|-g-g|g-.-g|Runn|rint"
+    "name": "+1 spell gems",
+    "regex": "\"ll g\""
   },
   {
-    "name": "Chromatic Recipe (RGB linked)",
-    "regex": ":.*(?=\\S*r)(?=\\S*g)(?=\\S*b)"
+    "name": "Leveling (3-link, 4-link, move, +1)",
+    "regex": "\".-.-.\"|\".-.-.-.\"|\"movement speed\"|\"ll g\""
   },
   {
-    "name": "+1 Spell Wand (vendor)",
-    "regex": "ll g"
+    "name": "Life and resists",
+    "regex": "\"maximum life\"|\"resistance\""
   },
   {
-    "name": "Templar Early (2B/RB/RR + RG + MS + +1 Wand)",
-    "regex": ":.*(?=\\S*r)(?=\\S*g)(?=\\S*b)|r-r|b-b|g-r|r-g|Runn|ll g"
+    "name": "6-link",
+    "regex": "\"(-.){5}\""
   },
   {
-    "name": "Caster Mid (BBB + 4L + RGB + MS + +1 Wand)",
-    "regex": "-\\w-.-|b-b-b|:.*(?=\\S*r)(?=\\S*g)(?=\\S*b)|Runn|rint|ll g"
+    "name": "Chaos recipe",
+    "regex": "\"rare\" \"item level: (6[0-9]|7[0-4])\""
   }
 ]

@@ -1,5 +1,5 @@
 use ksni::blocking::TrayMethods;
-use poe_core::{save_catalog, save_character, save_regex_presets, save_settings, AppState};
+use poe_core::AppState;
 use std::sync::{Arc, Mutex};
 
 struct RustyTray {
@@ -44,28 +44,11 @@ impl ksni::Tray for RustyTray {
 }
 
 fn open_config(state: &Mutex<AppState>) {
-    if let Ok(mut app) = state.lock() {
-        app.show_config = true;
-    }
+    crate::request_config(state);
 }
 
 fn exit_rusty(state: &Mutex<AppState>) {
-    if let Ok(app) = state.lock() {
-        if app.dirty_settings {
-            let _ = save_settings(&app.settings);
-        }
-        if app.dirty_catalog {
-            let _ = save_catalog(&app.catalog);
-        }
-        if app.dirty_regex {
-            let _ = save_regex_presets(&app.regex_presets);
-        }
-        if app.dirty_characters {
-            for character in &app.characters {
-                let _ = save_character(character);
-            }
-        }
-    }
+    crate::persist(state);
     std::process::exit(0);
 }
 

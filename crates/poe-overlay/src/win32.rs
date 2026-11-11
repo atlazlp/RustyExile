@@ -1,5 +1,5 @@
 use crate::draw::{Frame, Hit, Painter};
-use poe_core::{force_complete, parse_chord, visible_lines, AppState};
+use poe_core::{force_complete, parse_chord, visible_lines, AppState, HudCorner};
 use std::sync::{Arc, Mutex};
 use windows::core::w;
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
@@ -17,7 +17,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     GetWindowRect, IsWindowVisible, SetForegroundWindow,
     PeekMessageW, RegisterClassW, SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage,
     UpdateLayeredWindow, CW_USEDEFAULT, GWLP_HWNDPARENT, GWL_EXSTYLE, HWND_TOP, MSG, PM_REMOVE,
-    SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, ULW_ALPHA, WM_HOTKEY, WM_LBUTTONDOWN, WNDCLASSW, WS_EX_LAYERED,
+    SW_HIDE, SW_SHOWNA, SWP_NOACTIVATE, ULW_ALPHA, WM_HOTKEY, WM_LBUTTONDOWN, WM_LBUTTONUP, WNDCLASSW, WS_EX_LAYERED,
     WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP,
 };
 use windows::Win32::Graphics::Gdi::{BLENDFUNCTION, AC_SRC_ALPHA, AC_SRC_OVER};
@@ -29,6 +29,7 @@ struct ClickState {
     panel: isize,
     button: isize,
     panel_hits: Vec<Hit>,
+    drag: Option<(i32, i32, i32, i32)>,
 }
 
 static CLICK: Mutex<ClickState> = Mutex::new(ClickState {
@@ -36,6 +37,7 @@ static CLICK: Mutex<ClickState> = Mutex::new(ClickState {
     panel: 0,
     button: 0,
     panel_hits: Vec::new(),
+    drag: None,
 });
 
 pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
@@ -152,6 +154,19 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         let height = (rect.bottom - rect.top).max(1) as u32;
         let mut cursor = POINT::default();
         let _ = GetCursorPos(std::ptr::addr_of_mut!(cursor));
+        if let Ok(click) = CLICK.lock() {
+            if let Some((sx, sy, ox, oy)) = click.drag {
+                drop(click);
+                if let Ok(mut app) = state.lock() {
+                    if app.hud_placing {
+                        app.settings.custom_x = Some((ox + cursor.x - sx).max(0));
+                        app.settings.custom_y = Some((oy + cursor.y - sy).max(0));
+                    } else if let Ok(mut click) = CLICK.lock() {
+                        click.drag = None;
+                    }
+                }
+            }
+        }
         let near = (cursor.x - (rect.left + width as i32 / 2)).abs() < 90 && (cursor.y - rect.top).abs() < 48;
         let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32) < 0;
         let alt = GetAsyncKeyState(VK_MENU.0 as i32) < 0;
@@ -183,17 +198,37 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
                 lines
             })
             .unwrap_or_default();
-        let sig = format!("{}:{}:{}:{}:{near}:{ctrl}:{alt}:{}", rect.left, rect.top, width, height, lines.len());
         let theme = shared.settings.theme.clone();
         let opacity = shared.settings.opacity;
         let scale = shared.settings.scale;
         let corner = shared.settings.corner;
+        let placing = shared.hud_placing;
+        let show_config_button = shared.settings.show_config_button;
+        let custom = match (shared.settings.custom_x, shared.settings.custom_y) {
+            (Some(x), Some(y)) => Some((x, y)),
+            _ => None,
+        };
+        let sig = format!(
+            "{}:{}:{}:{}:{near}:{ctrl}:{alt}:{}:{}:{}:{:?}",
+            rect.left, rect.top, width, height, lines.len(), placing, show_config_button, custom
+        );
         drop(shared);
         if sig != last {
             last = sig;
-            let frame = painter.paint(width, height, &lines, &theme, opacity, scale, corner, near);
-            place_panel(panel, &frame, rect.left, rect.top, ctrl && alt);
-            place_button(button, &frame, rect.left, rect.top, near);
+            let frame = painter.paint(
+                width,
+                height,
+                &lines,
+                &theme,
+                opacity,
+                scale,
+                corner,
+                near && show_config_button && !placing,
+                custom,
+                placing,
+            );
+            place_panel(panel, &frame, rect.left, rect.top, ctrl && alt || placing);
+            place_button(button, &frame, rect.left, rect.top, near && show_config_button && !placing);
         }
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
@@ -446,6 +481,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     if msg == WM_LBUTTONDOWN {
         on_click(hwnd, lparam);
     }
+    if msg == WM_LBUTTONUP {
+        if let Ok(mut click) = CLICK.lock() {
+            click.drag = None;
+        }
+    }
     DefWindowProcW(hwnd, msg, wparam, lparam)
 }
 
@@ -465,12 +505,52 @@ fn on_click(hwnd: HWND, lparam: LPARAM) {
         return;
     }
     if hwnd == panel {
+        if app.hud_placing {
+            let confirm = hits.iter().any(|hit| {
+                hit.id == "confirm" && x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h
+            });
+            if confirm {
+                if app.settings.custom_x.is_none() {
+                    app.settings.custom_x = Some(0);
+                    app.settings.custom_y = Some(0);
+                }
+                app.settings.corner = HudCorner::Custom;
+                app.hud_placing = false;
+                app.dirty_settings = true;
+                return;
+            }
+            let (ox, oy) = panel_offset(panel);
+            app.settings.custom_x = Some(ox);
+            app.settings.custom_y = Some(oy);
+            drop(app);
+            let mut cursor = POINT::default();
+            unsafe {
+                let _ = GetCursorPos(std::ptr::addr_of_mut!(cursor));
+            }
+            if let Ok(mut click) = CLICK.lock() {
+                click.drag = Some((cursor.x, cursor.y, ox, oy));
+            }
+            return;
+        }
         if let Some(hit) = hits.iter().find(|hit| x >= hit.x && y >= hit.y && x < hit.x + hit.w && y < hit.y + hit.h) {
             if let Some(character) = app.active_character_mut() {
                 force_complete(&mut character.progress, &hit.id);
                 app.dirty_characters = true;
             }
         }
+    }
+}
+
+fn panel_offset(panel: isize) -> (i32, i32) {
+    unsafe {
+        let mut panel_rect = RECT::default();
+        let mut game_rect = RECT::default();
+        let hwnd = HWND(panel as *mut std::ffi::c_void);
+        let _ = GetWindowRect(hwnd, std::ptr::addr_of_mut!(panel_rect));
+        if let Some(game) = find_poe_window() {
+            let _ = GetWindowRect(game, std::ptr::addr_of_mut!(game_rect));
+        }
+        (panel_rect.left - game_rect.left, panel_rect.top - game_rect.top)
     }
 }
 

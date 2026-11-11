@@ -1,38 +1,45 @@
 use crate::model::RegexPreset;
 
+pub fn default_regex_index() -> usize {
+    default_presets()
+        .iter()
+        .position(|preset| preset.name == "Leveling (3-link, 4-link, move, +1)")
+        .unwrap_or(0)
+}
+
 pub fn default_presets() -> Vec<RegexPreset> {
     vec![
         RegexPreset {
-            name: "2H Melee (RRG + MS boots)".into(),
-            regex: r"-\w-.-|r-r-|-r-r|r-.-r|g-g-|-g-g|g-.-g|Runn|rint".into(),
+            name: "3-link (any colour)".into(),
+            regex: r#"".-.-.""#.into(),
         },
         RegexPreset {
-            name: "Caster (BBB + MS boots)".into(),
-            regex: r"-\w-.-|b-b-|-b-b|b-.-b|Runn|rint".into(),
+            name: "4-link (any colour)".into(),
+            regex: r#"".-.-.-.""#.into(),
         },
         RegexPreset {
-            name: "Bow / Dex (GGG + MS boots)".into(),
-            regex: r"-\w-.-|g-g-|-g-g|g-.-g|Runn|rint".into(),
+            name: "Movement speed".into(),
+            regex: r#""movement speed""#.into(),
         },
         RegexPreset {
-            name: "Spellcaster (BBG + MS boots)".into(),
-            regex: r"-\w-.-|b-b-|-b-b|b-.-b|g-g-|-g-g|g-.-g|Runn|rint".into(),
+            name: "+1 spell gems".into(),
+            regex: r#""ll g""#.into(),
         },
         RegexPreset {
-            name: "Chromatic Recipe (RGB linked)".into(),
-            regex: r":.*(?=\S*r)(?=\S*g)(?=\S*b)".into(),
+            name: "Leveling (3-link, 4-link, move, +1)".into(),
+            regex: r#"".-.-."|".-.-.-."|"movement speed"|"ll g""#.into(),
         },
         RegexPreset {
-            name: "+1 Spell Wand (vendor)".into(),
-            regex: "ll g".into(),
+            name: "Life and resists".into(),
+            regex: r#""maximum life"|"resistance""#.into(),
         },
         RegexPreset {
-            name: "Templar Early (2B/RB/RR + RG + MS + +1 Wand)".into(),
-            regex: r":.*(?=\S*r)(?=\S*g)(?=\S*b)|r-r|b-b|g-r|r-g|Runn|ll g".into(),
+            name: "6-link".into(),
+            regex: r#""(-.){5}""#.into(),
         },
         RegexPreset {
-            name: "Caster Mid (BBB + 4L + RGB + MS + +1 Wand)".into(),
-            regex: r"-\w-.-|b-b-b|:.*(?=\S*r)(?=\S*g)(?=\S*b)|Runn|rint|ll g".into(),
+            name: "Chaos recipe".into(),
+            regex: r#""rare" "item level: (6[0-9]|7[0-4])""#.into(),
         },
     ]
 }
@@ -60,6 +67,14 @@ pub fn vendor_gem_regex(names: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_selection_is_the_leveling_preset() {
+        let presets = default_presets();
+        let index = default_regex_index();
+        assert_eq!(presets[index].name, "Leveling (3-link, 4-link, move, +1)");
+        assert_eq!(crate::model::Settings::default().active_regex, index);
+    }
 
     #[test]
     fn builds_vendor_search() {
