@@ -67,6 +67,15 @@ pub fn save_character(file: &CharacterFile) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn delete_character(name: &str) -> anyhow::Result<()> {
+    let path = character_path(name);
+    if path.exists() {
+        fs::remove_file(&path)
+            .with_context(|| format!("could not delete {}", path.display()))?;
+    }
+    Ok(())
+}
+
 pub fn list_characters() -> Vec<CharacterFile> {
     let dir = root_dir().join("characters");
     let Ok(entries) = fs::read_dir(dir) else {

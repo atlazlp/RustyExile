@@ -1,9 +1,9 @@
 use eframe::egui::{self, Color32, RichText, TextureHandle, TextureOptions};
 use poe_core::{
-    build_route, fetch_pob, install_build, parse_markup, tone_rgb, update_needs_permission,
-    vendor_gem_regex, visible_lines, AppState, CampaignEvent, CharacterFile, ChatCommand,
-    EventGroup, EventKind, Experience, Hotkeys, HudCorner, TextTone, TriggerKind, UpdateOutcome,
-    VERSION,
+    build_route, fetch_pob, install_build, parse_markup, restart_at_beach,
+    tone_rgb, update_needs_permission, vendor_gem_regex, visible_lines, AppState, CampaignEvent,
+    CharacterFile, ChatCommand, EventGroup, EventKind, Experience, Hotkeys, HudCorner, TextTone,
+    TriggerKind, UpdateOutcome, VERSION,
 };
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -66,6 +66,8 @@ struct UiApp {
     update_manual: bool,
     start_update: bool,
     show_skipped: bool,
+    confirm_delete: Option<String>,
+    action_note: String,
     ctx: egui::Context,
 }
 
@@ -166,6 +168,8 @@ impl UiApp {
             update_manual: false,
             start_update,
             show_skipped: false,
+            confirm_delete: None,
+            action_note: String::new(),
             ctx: cc.egui_ctx.clone(),
         }
     }
@@ -543,6 +547,7 @@ impl UiApp {
 
     fn page(&mut self, ui: &mut egui::Ui) {
         self.page_heading(ui, self.tab.label(), self.tab.blurb());
+        self.active_character_card(ui);
         ui.add_space(20.0);
         match self.tab {
             Tab::Acts => self.events(ui, false),
@@ -1309,6 +1314,95 @@ impl UiApp {
         }
     }
 
+    fn active_character_card(&mut self, ui: &mut egui::Ui) {
+        let identity = self.state.lock().ok().and_then(|state| {
+            state
+                .active_character()
+                .map(|character| (character.name.clone(), character.class_name.clone()))
+        });
+        let Some((name, class_name)) = identity else {
+            return;
+        };
+        ui.add_space(16.0);
+        let width = ui.available_width().min(440.0);
+        let mut frame = card();
+        frame.stroke = egui::Stroke::new(1.5_f32, accent());
+        ui.allocate_ui_with_layout(
+            egui::vec2(width, 84.0),
+            egui::Layout::top_down(egui::Align::Min),
+            |ui| {
+                frame.show(ui, |ui| {
+                    ui.set_min_size(egui::vec2((width - 34.0).max(0.0), 38.0));
+                    ui.horizontal(|ui| {
+                        self.icon_ui(ui, "trial", 32.0);
+                        ui.add_space(12.0);
+                        ui.vertical(|ui| {
+                            let class = if class_name.trim().is_empty() {
+                                "Unknown class".to_string()
+                            } else {
+                                class_name
+                            };
+                            ui.label(RichText::new(class).color(accent()));
+                            ui.label(RichText::new(name).size(18.0).strong().color(ink()));
+                        });
+                    });
+                });
+            },
+        );
+    }
+
+    fn relevel_character(&mut self, name: &str) {
+        self.confirm_delete = None;
+        {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            let Some(character) = state
+                .characters
+                .iter_mut()
+                .find(|character| character.name == name)
+            else {
+                return;
+            };
+            restart_at_beach(character);
+            state.settings.active_character = Some(name.to_string());
+            state.dirty_characters = true;
+            state.dirty_settings = true;
+        }
+        self.action_note = format!("{name} is back on the Twilight Strand.");
+    }
+
+    fn delete_character(&mut self, name: &str) {
+        if self.confirm_delete.as_deref() != Some(name) {
+            self.confirm_delete = Some(name.to_string());
+            self.action_note = format!("Click Confirm delete to remove {name}.");
+            return;
+        }
+        self.confirm_delete = None;
+        let note = {
+            let Ok(mut state) = self.state.lock() else {
+                return;
+            };
+            if let Err(err) = poe_core::delete_character(name) {
+                format!("Could not delete {name}. {err}")
+            } else {
+                state
+                    .characters
+                    .retain(|character| character.name != name);
+                if state.settings.active_character.as_deref() == Some(name) {
+                    state.settings.active_character = state
+                        .characters
+                        .first()
+                        .map(|character| character.name.clone());
+                    state.dirty_settings = true;
+                }
+                state.dirty_characters = true;
+                format!("Deleted {name}.")
+            }
+        };
+        self.action_note = note;
+    }
+
     fn builds(&mut self, ui: &mut egui::Ui) {
         let names = self
             .state
@@ -1341,32 +1435,131 @@ impl UiApp {
         if names.is_empty() {
             ui.label(RichText::new("No characters yet.").color(muted()));
         }
+        if !self.action_note.is_empty() {
+            ui.label(RichText::new(&self.action_note).color(muted()));
+            ui.add_space(8.0);
+        }
+        let mut select = None;
+        let mut relevel = None;
+        let mut delete = None;
         for (name, class_name, gems, nodes) in names {
             let selected = active.as_deref() == Some(name.as_str());
-            let mut frame = card();
-            if selected {
-                frame.stroke = egui::Stroke::new(1.0_f32, accent());
-            }
-            frame.show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    self.icon_ui(ui, "trial", 22.0);
-                    ui.add_space(8.0);
-                    if ui
-                        .selectable_label(selected, RichText::new(&name).size(16.0).strong())
-                        .clicked()
-                    {
-                        if let Ok(mut state) = self.state.lock() {
-                            state.settings.active_character = Some(name);
-                            state.dirty_settings = true;
+            let armed = self.confirm_delete.as_deref() == Some(name.as_str());
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = 12.0;
+                let full = ui.available_width();
+                let button_w = 156.0;
+                let buttons = button_w * 2.0 + 12.0;
+                let card_w = (full - buttons - 12.0).clamp(240.0, 520.0);
+                let mut frame = card();
+                if selected {
+                    frame = frame
+                        .fill(accent_soft())
+                        .stroke(egui::Stroke::new(2.0_f32, accent()));
+                }
+                ui.allocate_ui_with_layout(
+                    egui::vec2(card_w, 88.0),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        frame.show(ui, |ui| {
+                            ui.set_min_size(egui::vec2((card_w - 34.0).max(0.0), 44.0));
+                            ui.horizontal(|ui| {
+                                self.icon_ui(ui, "trial", 28.0);
+                                ui.add_space(10.0);
+                                ui.vertical(|ui| {
+                                    ui.horizontal(|ui| {
+                                        let name_color = if selected { accent() } else { ink() };
+                                        let response = ui.add(
+                                            egui::Label::new(
+                                                RichText::new(&name)
+                                                    .size(18.0)
+                                                    .strong()
+                                                    .color(name_color),
+                                            )
+                                            .sense(egui::Sense::click()),
+                                        );
+                                        if response.clicked() {
+                                            select = Some(name.clone());
+                                        }
+                                        response.on_hover_cursor(egui::CursorIcon::PointingHand);
+                                        if selected {
+                                            ui.label(
+                                                RichText::new("Selected")
+                                                    .size(12.0)
+                                                    .strong()
+                                                    .color(accent()),
+                                            );
+                                        }
+                                    });
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 14.0;
+                                        let class = if class_name.trim().is_empty() {
+                                            "Unknown class".to_string()
+                                        } else {
+                                            class_name.clone()
+                                        };
+                                        ui.label(RichText::new(class).color(muted()));
+                                        ui.label(
+                                            RichText::new(format!("{gems} gems")).color(muted()),
+                                        );
+                                        ui.label(
+                                            RichText::new(format!("{nodes} tree nodes"))
+                                                .color(muted()),
+                                        );
+                                    });
+                                });
+                            });
+                        });
+                    },
+                );
+                let rest = ui.available_width();
+                ui.allocate_ui_with_layout(
+                    egui::vec2(rest, 88.0),
+                    egui::Layout::right_to_left(egui::Align::Center),
+                    |ui| {
+                        ui.spacing_mut().item_spacing.x = 12.0;
+                        let delete_label = if armed { "Confirm delete" } else { "Delete" };
+                        let mut delete_button = egui::Button::new(delete_label);
+                        if armed {
+                            delete_button = delete_button.fill(Color32::from_rgb(110, 48, 42));
                         }
-                    }
-                    ui.add_space(16.0);
-                    ui.label(RichText::new(class_name).color(muted()));
-                    ui.label(RichText::new(format!("{gems} gems")).color(muted()));
-                    ui.label(RichText::new(format!("{nodes} tree nodes")).color(muted()));
-                });
+                        if ui
+                            .add_sized([button_w, 36.0], delete_button)
+                            .on_hover_text(if armed {
+                                "Click again to remove this character and the imported build."
+                            } else {
+                                "Remove this character and the imported build."
+                            })
+                            .clicked()
+                        {
+                            delete = Some(name.clone());
+                        }
+                        if ui
+                            .add_sized([button_w, 36.0], egui::Button::new("Re-level"))
+                            .on_hover_text(
+                                "Erase progress and show the Twilight Strand mission on the overlay.",
+                            )
+                            .clicked()
+                        {
+                            relevel = Some(name.clone());
+                        }
+                    },
+                );
             });
             ui.add_space(8.0);
+        }
+        if let Some(name) = select {
+            self.confirm_delete = None;
+            if let Ok(mut state) = self.state.lock() {
+                state.settings.active_character = Some(name);
+                state.dirty_settings = true;
+            }
+        }
+        if let Some(name) = relevel {
+            self.relevel_character(&name);
+        }
+        if let Some(name) = delete {
+            self.delete_character(&name);
         }
         let skipped = self
             .state

@@ -408,6 +408,51 @@ mod tests {
     }
 
     #[test]
+    fn relevel_returns_to_hillock_on_the_twilight_strand() {
+        let catalog = load_catalog();
+        let route = build_route(&catalog, "Witch", None, true);
+        let events = route.events.len();
+        let mut file = poe_core::CharacterFile {
+            name: "Witch".into(),
+            class_name: "Witch".into(),
+            route,
+            progress: Default::default(),
+            user_edited: false,
+        };
+        file.route.pob_url = "keep".into();
+        for (name, id) in [
+            ("The Twilight Strand", "1_1_1"),
+            ("Lioneye's Watch", "1_1_town"),
+            ("The Coast", "1_1_2"),
+            ("The Mud Flats", "1_1_3"),
+        ] {
+            poe_core::apply_parsed(
+                &mut file,
+                &poe_core::ParsedLog::Entered {
+                    name: name.into(),
+                    area_id: Some(id.into()),
+                },
+                Some(1),
+            );
+        }
+        file.progress.level = 12;
+        file.progress.completed.insert("already-done".into());
+        poe_core::restart_at_beach(&mut file);
+        assert_eq!(file.route.events.len(), events);
+        assert_eq!(file.route.pob_url, "keep");
+        assert_eq!(file.class_name, "Witch");
+        assert_eq!(file.progress.level, 1);
+        assert_eq!(file.progress.area_id, "1_1_1");
+        assert_eq!(file.progress.zone_name, "The Twilight Strand");
+        assert!(file.progress.completed.is_empty());
+        assert!(file.progress.skipped_groups.is_empty());
+        let shown = shown_text(&file);
+        assert!(shown.contains("The Twilight Strand"), "{shown}");
+        assert!(shown.contains("Hillock"), "{shown}");
+        assert!(!shown.contains("The Mud Flats"), "{shown}");
+    }
+
+    #[test]
     fn pob_bandit_selects_the_act_two_route() {
         let catalog = load_catalog();
         let kill = build_route(&catalog, "Ranger", None, false);

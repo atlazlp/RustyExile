@@ -552,6 +552,21 @@ pub fn note_current_zone(
     let _ = arrive(file, name, area_id, act);
 }
 
+pub fn restart_at_beach(file: &mut CharacterFile) {
+    let class_name = if !file.class_name.is_empty() {
+        file.class_name.clone()
+    } else {
+        file.progress.class_name.clone()
+    };
+    file.class_name = class_name.clone();
+    file.progress = CharacterProgress {
+        class_name,
+        level: 1,
+        ..CharacterProgress::default()
+    };
+    note_current_zone(file, "The Twilight Strand", Some("1_1_1"), Some(1));
+}
+
 pub fn force_complete(progress: &mut CharacterProgress, event_id: &str) {
     progress.completed.insert(event_id.to_string());
 }
@@ -749,6 +764,48 @@ mod tests {
             .iter()
             .any(|line| line.is_header && line.text == "The Mud Flats"));
         assert!(!lines.iter().any(|line| line.event_id == "enter-mud"));
+    }
+
+    #[test]
+    fn restart_at_beach_clears_progress_and_shows_the_first_mission() {
+        let mut route = CharacterRoute::default();
+        let mut hillock = step("hillock", "1_1_1", "1_1_town");
+        hillock.text = "Find and kill Hillock".into();
+        let mut town = step("town", "1_1_town", "1_1_2");
+        town.text = "Enter Lioneye's Watch".into();
+        route.events.extend([hillock, town]);
+        route.groups.push(group("g-strand", "1_1_1", &["hillock"]));
+        route.groups.push(group("g-town", "1_1_town", &["town"]));
+        route.groups[0].name = "The Twilight Strand".into();
+        route.groups[1].name = "Lioneye's Watch".into();
+        let mut file = character(route);
+        file.class_name = "Witch".into();
+        file.progress.class_name = "Witch".into();
+        file.progress.level = 40;
+        file.progress.area_id = "1_3_1".into();
+        file.progress.zone_name = "The City of Sarn".into();
+        file.progress.entered_areas.insert("1_3_1".into());
+        file.progress.completed.insert("old".into());
+        file.progress.highest_act = 3;
+        file.progress.skipped_groups.push("g-town".into());
+        restart_at_beach(&mut file);
+        assert_eq!(file.class_name, "Witch");
+        assert_eq!(file.progress.class_name, "Witch");
+        assert_eq!(file.progress.level, 1);
+        assert_eq!(file.progress.area_id, "1_1_1");
+        assert_eq!(file.progress.zone_name, "The Twilight Strand");
+        assert_eq!(file.progress.highest_act, 1);
+        assert!(file.progress.completed.is_empty());
+        assert!(file.progress.skipped_groups.is_empty());
+        assert_eq!(
+            file.progress.entered_areas.iter().collect::<Vec<_>>(),
+            vec!["1_1_1"]
+        );
+        let lines = visible_lines(&file.route, &file.progress, true, true, false);
+        assert!(lines
+            .iter()
+            .any(|line| line.is_header && line.text == "The Twilight Strand"));
+        assert!(lines.iter().any(|line| line.event_id == "hillock"));
     }
 
     fn enter(name: &str, area: &str) -> ParsedLog {

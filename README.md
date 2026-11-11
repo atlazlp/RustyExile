@@ -70,7 +70,7 @@ The first window asks you to start as Beginner, Intermediate, or Advanced.
 
 Every switch can be changed later. Open configuration from the button at the top center of the game window, or with Ctrl+Shift+O. Close that window with its close button.
 
-The Twilight Strand starts with killing Hillock. Each later zone shows the step or gem that starts there, and hides it when the next route zone is entered. Ctrl+Alt+click clears a line early. The game log does not record quest turn-ins, gem pickups, or vendor buys. Passive-tree specs imported from Path of Building are saved and are not drawn yet.
+The Twilight Strand starts with killing Hillock. Each later zone shows the step or gem that starts there, and hides it when the next route zone is entered. On the Builds tab, Re-level clears that character's progress and puts the overlay back on the Twilight Strand, with Hillock as the first mission. Delete removes the character. Ctrl+Alt+click clears a line early. The game log does not record quest turn-ins, gem pickups, or vendor buys. Passive-tree specs imported from Path of Building are saved and are not drawn yet.
 
 ## Hotkeys
 

@@ -1,6 +1,6 @@
 #define MyAppName "RustyExile"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.6"
+  #define MyAppVersion "1.0.7"
 #endif
 #define MyAppPublisher "atlazlp"
 #define MyAppURL "https://github.com/atlazlp/RustyExile"
