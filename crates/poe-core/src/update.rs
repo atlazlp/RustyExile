@@ -83,7 +83,7 @@ pub fn update_needs_permission() -> bool {
 }
 
 pub fn restart_installed() -> anyhow::Result<()> {
-    let exe = std::env::current_exe().context("could not find the running program")?;
+    let exe = running_program()?;
     #[cfg(windows)]
     {
         if let Some(pending) = read_pending_update() {
@@ -112,13 +112,69 @@ pub fn restart_installed() -> anyhow::Result<()> {
         .context("could not start the Windows updater")?;
         std::process::exit(0);
     }
-    #[cfg(not(windows))]
+    #[cfg(unix)]
+    {
+        spawn_unix_restart(&exe)?;
+        std::process::exit(0);
+    }
+    #[cfg(not(any(windows, unix)))]
     {
         std::process::Command::new(&exe)
             .spawn()
             .context("could not start the updated program")?;
         std::process::exit(0);
     }
+}
+
+fn running_program() -> anyhow::Result<PathBuf> {
+    let exe = std::env::current_exe().context("could not find the running program")?;
+    Ok(strip_deleted(&exe))
+}
+
+fn strip_deleted(path: &Path) -> PathBuf {
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return path.to_path_buf();
+    };
+    let Some(clean) = name.strip_suffix(" (deleted)") else {
+        return path.to_path_buf();
+    };
+    if clean.is_empty() {
+        return path.to_path_buf();
+    }
+    path.with_file_name(clean)
+}
+
+#[cfg(any(unix, test))]
+fn unix_restart_script() -> &'static str {
+    "i=0; while kill -0 \"$1\" 2>/dev/null; do i=$((i+1)); if [ \"$i\" -gt 150 ]; then exit 1; fi; sleep 0.2; done; exec \"$2\""
+}
+
+#[cfg(unix)]
+fn spawn_unix_restart(exe: &Path) -> anyhow::Result<()> {
+    spawn_unix_restart_for(exe, std::process::id())
+}
+
+#[cfg(unix)]
+fn spawn_unix_restart_for(exe: &Path, pid: u32) -> anyhow::Result<()> {
+    if !exe.is_file() {
+        anyhow::bail!("the updated program is missing");
+    }
+    set_executable(exe)?;
+    let mut cmd = std::process::Command::new("sh");
+    cmd.arg("-c")
+        .arg(unix_restart_script())
+        .arg("rusty-restart")
+        .arg(pid.to_string())
+        .arg(exe)
+        .stdin(std::process::Stdio::null());
+    if let Some(dir) = exe.parent() {
+        cmd.current_dir(dir);
+    }
+    use std::os::unix::process::CommandExt;
+    cmd.process_group(0);
+    cmd.spawn()
+        .context("could not start the updated program")?;
+    Ok(())
 }
 
 fn fetch_newer_release() -> anyhow::Result<Option<ReleaseAsset>> {
@@ -188,7 +244,7 @@ fn download_and_install(release: &ReleaseAsset) -> anyhow::Result<()> {
         .into_reader()
         .take(200 * 1024 * 1024)
         .read_to_end(&mut bytes)?;
-    let exe = std::env::current_exe().context("could not find the running program")?;
+    let exe = running_program()?;
     let asset_dir = exe
         .parent()
         .context("the program has no folder")?
@@ -642,6 +698,51 @@ fn parse_version(text: &str) -> Option<(u64, u64, u64)> {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn replaced_linux_binary_is_not_relaunched_from_the_deleted_path() {
+        let replaced = PathBuf::from("/opt/RustyExile/RustyExile (deleted)");
+        assert_eq!(
+            strip_deleted(&replaced),
+            PathBuf::from("/opt/RustyExile/RustyExile")
+        );
+        let current = PathBuf::from("/opt/RustyExile/RustyExile");
+        assert_eq!(strip_deleted(&current), current);
+        let script = unix_restart_script();
+        assert!(script.contains("kill -0"));
+        assert!(script.contains("exec \"$2\""));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn restart_helper_starts_the_new_program_after_the_old_one_exits() {
+        let root = std::env::temp_dir().join(format!("rusty-restart-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        let marker = root.join("started");
+        let program = root.join("program");
+        fs::write(
+            &program,
+            format!("#!/bin/sh\nprintf started > '{}'\n", marker.display()),
+        )
+        .unwrap();
+        set_executable(&program).unwrap();
+        let mut old = std::process::Command::new("sleep").arg("30").spawn().unwrap();
+        spawn_unix_restart_for(&program, old.id()).unwrap();
+        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            !marker.exists(),
+            "the updated program started while the previous process was still running"
+        );
+        old.kill().unwrap();
+        let _ = old.wait();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !marker.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(marker.is_file(), "the updated program did not start");
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn newer_release_compares_numbers() {
