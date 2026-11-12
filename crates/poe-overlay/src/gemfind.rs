@@ -361,48 +361,6 @@ fn paint_squares(
     }
 }
 
-#[cfg_attr(not(windows), allow(dead_code))]
-pub fn compose(marks: &[GemMark], badge: impl Fn(&str) -> Option<RgbaImage>) -> Option<Composed> {
-    if marks.is_empty() {
-        return None;
-    }
-    let pad = 4i32;
-    let tail = 22i32;
-    let x0 = marks.iter().map(|mark| mark.x - pad).min()?;
-    let y0 = marks.iter().map(|mark| mark.y - pad).min()?;
-    let x1 = marks
-        .iter()
-        .map(|mark| mark.x.saturating_add(mark.side as i32) + pad + tail)
-        .max()?;
-    let y1 = marks
-        .iter()
-        .map(|mark| mark.y.saturating_add(mark.side as i32) + pad + tail)
-        .max()?;
-    let width = (x1 - x0).max(1) as u32;
-    let height = (y1 - y0).max(1) as u32;
-    if width > 2400 || height > 1600 {
-        return None;
-    }
-    let mut bgra = vec![0u8; (width * height * 4) as usize];
-    paint_squares(&mut bgra, width, height, x0, y0, marks, &badge);
-    Some(Composed {
-        x: x0,
-        y: y0,
-        width,
-        height,
-        bgra,
-    })
-}
-
-#[cfg_attr(not(windows), allow(dead_code))]
-pub struct Composed {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-    pub bgra: Vec<u8>,
-}
-
 #[cfg_attr(windows, allow(dead_code))]
 pub fn parse_ppm(data: &[u8]) -> Option<RgbImage> {
     if data.len() < 8 || &data[..2] != b"P6" {
@@ -468,14 +426,16 @@ fn hold(
     needles: &[Needle],
 ) -> Vec<GemMark> {
     let Some(image) = image else {
-        return previous.clone();
+        previous.clear();
+        return Vec::new();
     };
+    const STICK: i32 = 12;
     let mut shown = Vec::new();
     for hit in fresh {
         if let Some(old) = previous.iter().find(|old| {
             old.event_id == hit.event_id
-                && (old.x - hit.x).abs() <= old.side as i32
-                && (old.y - hit.y).abs() <= old.side as i32
+                && (old.x - hit.x).abs() <= STICK
+                && (old.y - hit.y).abs() <= STICK
         }) {
             let mut kept = old.clone();
             kept.cost_icon = hit.cost_icon;
@@ -1044,7 +1004,41 @@ mod tests {
         let shown = hold(&mut previous, Vec::new(), Some(&scene), 0, 0, &[needle_clone(&needle)]);
         assert_eq!(shown.len(), 1);
         let gone = RgbImage::from_pixel(200, 160, Rgb([16, 14, 18]));
-        let shown = hold(&mut previous, Vec::new(), Some(&gone), 0, 0, &[needle]);
+        let shown = hold(
+            &mut previous,
+            Vec::new(),
+            Some(&gone),
+            0,
+            0,
+            &[needle_clone(&needle)],
+        );
+        assert!(shown.is_empty());
+        let mut parked = vec![GemMark {
+            event_id: "fireball".into(),
+            x: 40,
+            y: 30,
+            side: 51,
+            cost_icon: "wisdom".into(),
+            score: 10.0,
+        }];
+        let scrolled = GemMark {
+            event_id: "fireball".into(),
+            x: 80,
+            y: 30,
+            side: 48,
+            cost_icon: "wisdom".into(),
+            score: 12.0,
+        };
+        let shown = hold(
+            &mut parked,
+            vec![scrolled],
+            Some(&scene),
+            0,
+            0,
+            &[needle_clone(&needle)],
+        );
+        assert_eq!((shown[0].x, shown[0].y), (80, 30));
+        let shown = hold(&mut parked, Vec::new(), None, 0, 0, &[]);
         assert!(shown.is_empty());
     }
 

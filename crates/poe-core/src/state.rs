@@ -44,8 +44,9 @@ impl AppState {
     }
 
     pub fn in_town(&self) -> bool {
-        self.active_character()
-            .is_some_and(|character| character.progress.area_id.ends_with("_town"))
+        self.active_character().is_some_and(|character| {
+            crate::engine::place_is_town(&character.progress.area_id, &character.progress.zone_name)
+        })
     }
 
     pub fn click_gem(&mut self, x: i32, y: i32) {

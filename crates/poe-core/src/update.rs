@@ -63,11 +63,7 @@ pub fn install_archive(
         }
         let assets = temp.join("assets");
         if assets.is_dir() {
-            if asset_dir.exists() {
-                remove_tree(asset_dir)
-                    .with_context(|| format!("could not replace {}", asset_dir.display()))?;
-            }
-            copy_tree(&assets, asset_dir, protected)?;
+            swap_tree(&assets, asset_dir, protected)?;
         }
         replace_executable(&packed, exe)?;
         Ok(())
@@ -270,6 +266,43 @@ fn extract_zip(bytes: &[u8], dest: &Path) -> anyhow::Result<()> {
         }
         let mut output = fs::File::create(&path)?;
         std::io::copy(&mut file, &mut output)?;
+    }
+    Ok(())
+}
+
+fn swap_tree(from: &Path, dest: &Path, protected: &Path) -> anyhow::Result<()> {
+    let staging = dest.with_extension("new");
+    let backup = dest.with_extension("old");
+    ensure_outside(&staging, protected)?;
+    ensure_outside(&backup, protected)?;
+    clear_path(&staging)?;
+    clear_path(&backup)?;
+    if let Err(err) = copy_tree(from, &staging, protected) {
+        let _ = remove_tree(&staging);
+        return Err(err);
+    }
+    if dest.exists() {
+        fs::rename(dest, &backup)
+            .with_context(|| format!("could not replace {}", dest.display()))?;
+    }
+    if let Err(err) = fs::rename(&staging, dest) {
+        if backup.exists() {
+            let _ = fs::rename(&backup, dest);
+        }
+        let _ = remove_tree(&staging);
+        return Err(err).with_context(|| format!("could not replace {}", dest.display()));
+    }
+    if backup.exists() {
+        let _ = remove_tree(&backup);
+    }
+    Ok(())
+}
+
+fn clear_path(path: &Path) -> anyhow::Result<()> {
+    if path.is_dir() {
+        remove_tree(path).with_context(|| format!("could not replace {}", path.display()))?;
+    } else if path.exists() {
+        fs::remove_file(path).with_context(|| format!("could not replace {}", path.display()))?;
     }
     Ok(())
 }
@@ -745,6 +778,22 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_asset_copy_leaves_the_old_icons() {
+        let root = std::env::temp_dir().join(format!("rusty-assets-keep-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let assets = root.join("assets");
+        fs::create_dir_all(assets.join("data")).unwrap();
+        fs::write(assets.join("data/gems.json"), "old-gems").unwrap();
+        swap_tree(&root.join("missing"), &assets, &root.join("data")).unwrap_err();
+        assert_eq!(
+            fs::read_to_string(assets.join("data/gems.json")).unwrap(),
+            "old-gems"
+        );
+        assert!(!assets.with_extension("new").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn newer_release_compares_numbers() {
         assert!(is_newer("0.2.0", "0.1.0"));
         assert!(is_newer("v0.1.1", "0.1.0"));
@@ -794,6 +843,8 @@ mod tests {
             fs::read_to_string(app.join("assets/data/gems.json")).unwrap(),
             "{}"
         );
+        assert!(!app.join("assets.new").exists());
+        assert!(!app.join("assets.old").exists());
         assert!(!update_needs_permission());
         let _ = fs::remove_dir_all(&root);
     }

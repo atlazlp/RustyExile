@@ -48,6 +48,11 @@ pub fn cursor_pos() -> Option<(i32, i32)> {
     hypr::cursor()
 }
 
+#[cfg(target_os = "linux")]
+pub fn game_focused() -> bool {
+    hypr::game_window().is_some_and(|window| window.focused)
+}
+
 #[cfg(not(target_os = "linux"))]
 pub fn cursor_pos() -> Option<(i32, i32)> {
     None

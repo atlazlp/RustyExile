@@ -322,6 +322,12 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
 }
 
 fn click_gem_spot(state: &Arc<Mutex<AppState>>) {
+    let Some(game) = (unsafe { find_poe_window() }) else {
+        return;
+    };
+    if unsafe { GetForegroundWindow() } != game {
+        return;
+    }
     let mut cursor = POINT::default();
     if unsafe { GetCursorPos(std::ptr::addr_of_mut!(cursor)) }.is_err() {
         return;
@@ -360,16 +366,28 @@ fn sync_gem_window(
         }
         GemPass::Pending => {}
         GemPass::Ready(marks) => {
+            if marks.is_empty() {
+                if let Ok(mut shared) = state.lock() {
+                    shared.gem_spots.clear();
+                }
+                unsafe { hide_layered(hwnd) };
+                return;
+            }
             if let Ok(mut shared) = state.lock() {
                 shared.gem_spots = gemfind::spots(&marks);
             }
-            let Some(frame) = gemfind::compose(&marks, poe_data::load_icon) else {
-                unsafe { hide_layered(hwnd) };
-                return;
-            };
+            let (width, height) = gemfind::search_size(window_w, window_h);
+            let bgra = gemfind::compose_canvas(
+                &marks,
+                origin_x,
+                origin_y,
+                width,
+                height,
+                poe_data::load_icon,
+            );
             unsafe {
                 reveal(hwnd);
-                move_layered(hwnd, frame.x, frame.y, frame.width, frame.height, &frame.bgra);
+                move_layered(hwnd, origin_x, origin_y, width, height, &bgra);
                 set_click_through(hwnd, true);
                 reveal(hwnd);
             }

@@ -487,11 +487,15 @@ fn line_from(event: &CampaignEvent, show_tips: bool) -> VisibleLine {
     }
 }
 
+pub(crate) fn place_is_town(area_id: &str, name: &str) -> bool {
+    area_id.ends_with("_town")
+        || area_id.to_ascii_lowercase().contains("hideout")
+        || name.to_ascii_lowercase().contains("hideout")
+}
+
 pub fn note_zone_kind(progress: &mut CharacterProgress, name: &str, area_id: &str) {
     let trial = name.eq_ignore_ascii_case("Aspirant's Trial") || area_id.contains("Labyrinth_boss");
-    let town = area_id.ends_with("_town")
-        || area_id.to_ascii_lowercase().contains("hideout")
-        || name.to_ascii_lowercase().contains("hideout");
+    let town = place_is_town(area_id, name);
     if trial {
         progress.trial_gems = true;
     } else if town {
@@ -1103,6 +1107,14 @@ mod tests {
             progress: CharacterProgress::default(),
             user_edited: false,
         }
+    }
+
+    #[test]
+    fn a_hideout_counts_as_town() {
+        assert!(place_is_town("1_1_town", "Lioneye's Watch"));
+        assert!(place_is_town("HideoutShore", "Coastal Hideout"));
+        assert!(place_is_town("2_6_town", "Hideout"));
+        assert!(!place_is_town("1_1_2", "The Coast"));
     }
 
     fn group(id: &str, area: &str, events: &[&str]) -> EventGroup {

@@ -522,6 +522,9 @@ fn evdev_loop(state: Arc<Mutex<AppState>>) {
 
 #[cfg(target_os = "linux")]
 fn click_gem_spot(state: &Arc<Mutex<AppState>>) {
+    if !poe_overlay::game_focused() {
+        return;
+    }
     let Some((x, y)) = poe_overlay::cursor_pos() else {
         return;
     };
