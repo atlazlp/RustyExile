@@ -458,6 +458,7 @@ pub struct QuestGem {
     pub classes: Vec<String>,
     pub npc: String,
     pub source: GemSource,
+    pub offer: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

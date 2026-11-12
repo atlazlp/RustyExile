@@ -117,14 +117,28 @@ fn load_quests(path: &Path) -> Vec<QuestInfo> {
             let mut npc = String::new();
             let mut gems = Vec::new();
             if let Some(offers) = value.get("reward_offers").and_then(|v| v.as_object()) {
-                for offer in offers.values() {
-                    if npc.is_empty() {
-                        if let Some(quest_npc) = offer.get("quest_npc").and_then(|v| v.as_str()) {
-                            npc = quest_npc.to_string();
-                        }
+                for (offer_id, offer) in offers {
+                    let offer_npc = offer
+                        .get("quest_npc")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("");
+                    if npc.is_empty() && !offer_npc.is_empty() {
+                        npc = offer_npc.to_string();
                     }
-                    collect_gems(offer.get("quest"), GemSource::Reward, &npc, &mut gems);
-                    collect_gems(offer.get("vendor"), GemSource::Vendor, &npc, &mut gems);
+                    collect_gems(
+                        offer.get("quest"),
+                        GemSource::Reward,
+                        offer_npc,
+                        offer_id,
+                        &mut gems,
+                    );
+                    collect_gems(
+                        offer.get("vendor"),
+                        GemSource::Vendor,
+                        offer_npc,
+                        offer_id,
+                        &mut gems,
+                    );
                 }
             }
             Some(QuestInfo {
@@ -142,6 +156,7 @@ fn collect_gems(
     bucket: Option<&serde_json::Value>,
     source: GemSource,
     fallback_npc: &str,
+    offer: &str,
     out: &mut Vec<QuestGem>,
 ) {
     let Some(map) = bucket.and_then(|v| v.as_object()) else {
@@ -167,6 +182,7 @@ fn collect_gems(
             classes,
             npc,
             source,
+            offer: offer.to_string(),
         });
     }
 }
@@ -245,7 +261,7 @@ mod tests {
     #[test]
     fn vendor_buys_use_the_currency_that_gem_costs() {
         let catalog = load_catalog();
-        let route = build_route(&catalog, "Witch", None, true);
+        let route = build_route(&catalog, "Witch", Some(&every_gem(&catalog)), true);
         let mut wisdom = false;
         let mut other = false;
         let mut buys = 0;
@@ -277,6 +293,8 @@ mod tests {
         assert!(catalog.gems.len() > 100);
         let route = build_route(&catalog, "Templar", None, true);
         assert!(route.events.iter().any(|e| e.text.contains("The Coast")));
+        assert!(route.events.iter().all(|event| !event.kind.is_gem()));
+        let route = build_route(&catalog, "Templar", Some(&every_gem(&catalog)), true);
         assert!(route.events.iter().any(
             |e| e.kind == poe_core::EventKind::GemPick || e.kind == poe_core::EventKind::GemBuy
         ));
@@ -359,7 +377,6 @@ mod tests {
         for (name, id) in [
             ("The Chamber of Sins Level 1", "1_2_6_1"),
             ("The Chamber of Sins Level 2", "1_2_6_2"),
-            ("The Crossroads", "1_2_3"),
         ] {
             poe_core::apply_parsed(
                 &mut file,
@@ -370,6 +387,25 @@ mod tests {
                 Some(2),
             );
         }
+        poe_core::apply_parsed(
+            &mut file,
+            &poe_core::ParsedLog::Entered {
+                name: "The Forest Encampment".into(),
+                area_id: Some("1_2_town".into()),
+            },
+            Some(2),
+        );
+        let shown = shown_text(&file);
+        assert!(shown.contains("Intruders in Black"), "{shown}");
+        assert!(!shown.contains("Fellshrine"), "{shown}");
+        poe_core::apply_parsed(
+            &mut file,
+            &poe_core::ParsedLog::Entered {
+                name: "The Crossroads".into(),
+                area_id: Some("1_2_3".into()),
+            },
+            Some(2),
+        );
         let shown = shown_text(&file);
         assert!(shown.contains("Fellshrine"), "{shown}");
     }
@@ -641,6 +677,99 @@ mod tests {
                 "{choice:?}"
             );
         }
+    }
+
+    #[test]
+    fn logout_ends_in_town_and_a_reward_window_gives_one_gem() {
+        let catalog = load_catalog();
+        let route = build_route(&catalog, "Witch", None, true);
+        let mut logouts = 0;
+        for (index, group) in route.groups.iter().enumerate() {
+            let events: Vec<_> = group
+                .event_ids
+                .iter()
+                .filter_map(|id| route.events.iter().find(|event| &event.id == id))
+                .collect();
+            let Some(pos) = events
+                .iter()
+                .position(|event| event.text == "Logout or Portal to Town")
+            else {
+                continue;
+            };
+            logouts += 1;
+            assert_eq!(
+                pos,
+                events.len() - 1,
+                "{} keeps a step after logout",
+                group.name
+            );
+            let Some(next) = route.groups.get(index + 1) else {
+                continue;
+            };
+            let first = next.event_ids.first().and_then(|id| {
+                route.events.iter().find(|event| &event.id == id)
+            });
+            let Some(first) = first else { continue };
+            let plain = poe_core::plain_text(&first.text);
+            if plain.starts_with("Waypoint") || plain.starts_with("Enter") {
+                continue;
+            }
+            let town = catalog
+                .areas
+                .iter()
+                .find(|area| area.act == group.act && area.is_town)
+                .unwrap_or_else(|| panic!("act {} has no town", group.act));
+            assert_eq!(
+                next.name, town.name,
+                "after logout in {}, '{plain}' is still in {}",
+                group.name, next.name
+            );
+        }
+        assert!(logouts > 10, "logouts across the acts: {logouts}");
+        let brutes: Vec<_> = route
+            .events
+            .iter()
+            .filter(|event| event.text.contains("Hand in The Caged Brute"))
+            .collect();
+        assert_eq!(brutes.len(), 2);
+        assert!(brutes[0].detail.contains("Nessa"), "{}", brutes[0].detail);
+        assert!(
+            brutes[1].detail.contains("Tarkleigh"),
+            "{}",
+            brutes[1].detail
+        );
+
+        let filter: std::collections::HashSet<String> = [
+            "Freezing Pulse",
+            "Rolling Magma",
+            "Frost Bomb",
+            "Frostblink",
+            "Contagion",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        let route = build_route(&catalog, "Witch", Some(&filter), true);
+        let enemy: Vec<_> = route
+            .events
+            .iter()
+            .filter(|event| event.id.starts_with("gem-a1q1-"))
+            .collect();
+        assert_eq!(enemy.iter().filter(|event| event.kind == poe_core::EventKind::GemPick).count(), 1);
+        assert_eq!(enemy.iter().filter(|event| event.kind == poe_core::EventKind::GemBuy).count(), 1);
+        assert!(enemy.iter().any(|event| event.kind == poe_core::EventKind::GemBuy && event.text.contains("Nessa")));
+        let eggs: Vec<_> = route
+            .events
+            .iter()
+            .filter(|event| event.id.starts_with("gem-a1q4-"))
+            .collect();
+        assert_eq!(eggs.iter().filter(|event| event.kind == poe_core::EventKind::GemPick).count(), 2);
+        assert_eq!(eggs.iter().filter(|event| event.kind == poe_core::EventKind::GemBuy).count(), 1);
+        assert!(eggs.iter().filter(|event| event.kind == poe_core::EventKind::GemPick).all(|event| event.text.contains("Tarkleigh")));
+    }
+
+    fn every_gem(catalog: &poe_core::Catalog) -> std::collections::HashSet<String> {
+        catalog.gems.iter().map(|gem| gem.name.clone()).collect()
     }
 
     fn shown_text(file: &poe_core::CharacterFile) -> String {

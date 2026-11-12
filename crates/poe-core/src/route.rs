@@ -2,7 +2,7 @@ use crate::model::{
     AreaInfo, BanditChoice, CampaignEvent, Catalog, CharacterRoute, EventGroup, EventKind,
     GemSource, QuestGem, TriggerKind,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Debug)]
 struct RawStep {
@@ -12,6 +12,7 @@ struct RawStep {
     area_id: Option<String>,
     quest_ids: Vec<String>,
     act: u8,
+    logout: bool,
 }
 
 pub fn build_route(
@@ -42,11 +43,20 @@ pub fn build_route_with(
     }
     assign_leading_area(&mut steps, catalog);
     let mut carry: Option<String> = None;
+    let mut back_in_town = false;
     for step in &mut steps {
         if step.area_id.is_none() {
-            step.area_id = carry.clone();
+            step.area_id = if back_in_town {
+                act_town(catalog, step.act).or_else(|| carry.clone())
+            } else {
+                carry.clone()
+            };
         } else {
             carry = step.area_id.clone();
+            back_in_town = false;
+        }
+        if step.logout {
+            back_in_town = true;
         }
     }
 
@@ -58,7 +68,7 @@ pub fn build_route_with(
     while index < steps.len() {
         let area = steps[index].area_id.clone();
         let mut end = index + 1;
-        while end < steps.len() && steps[end].area_id == area {
+        while end < steps.len() && steps[end].area_id == area && !steps[end - 1].logout {
             end += 1;
         }
         let end_area = steps.get(end).and_then(|s| s.area_id.clone());
@@ -95,12 +105,13 @@ pub fn build_route_with(
                 zone_name: Some(zone_name.clone()),
                 cost_icon: String::new(),
             });
-            for quest_id in &step.quest_ids {
+            if let Some((quest_id, offers)) = step.quest_ids.split_first() {
                 push_quest_gems(
                     catalog,
                     &mut route,
                     &mut ids,
                     quest_id,
+                    offers,
                     class_name,
                     gem_filter,
                     step.act,
@@ -132,6 +143,7 @@ fn push_quest_gems(
     route: &mut CharacterRoute,
     ids: &mut Vec<String>,
     quest_id: &str,
+    offer_filter: &[String],
     class_name: &str,
     gem_filter: Option<&HashSet<String>>,
     act: u8,
@@ -142,72 +154,192 @@ fn push_quest_gems(
     let Some(quest) = catalog.quest(quest_id) else {
         return;
     };
-    if class_name.is_empty() {
+    if class_name.is_empty() || gem_filter.is_none() {
         return;
     }
-    for gem in &quest.gems {
-        if quest_id == "a6q4" && gem.source == GemSource::Vendor {
+    let gems: Vec<&QuestGem> = quest
+        .gems
+        .iter()
+        .filter(|gem| {
+            gem_wanted(
+                catalog,
+                gem,
+                quest_id,
+                offer_filter,
+                class_name,
+                gem_filter,
+            )
+        })
+        .collect();
+    let mut vendor_of: HashMap<&str, &QuestGem> = HashMap::new();
+    for gem in &gems {
+        if gem.source == GemSource::Vendor {
+            vendor_of.entry(gem.gem_id.as_str()).or_insert(gem);
+        }
+    }
+    let mut offer_order = Vec::new();
+    let mut rewards: HashMap<&str, Vec<&QuestGem>> = HashMap::new();
+    for gem in &gems {
+        if gem.source != GemSource::Reward {
             continue;
         }
-        if !gem.classes.is_empty()
-            && !gem
-                .classes
-                .iter()
-                .any(|c| c.eq_ignore_ascii_case(class_name))
-        {
+        let list = rewards.entry(gem.offer.as_str()).or_default();
+        if list.iter().any(|have| have.gem_id == gem.gem_id) {
             continue;
         }
-        let Some(info) = catalog.gem(&gem.gem_id) else {
-            continue;
-        };
-        if let Some(filter) = gem_filter {
-            if !filter.iter().any(|n| names_match(n, &info.name)) {
+        if list.is_empty() {
+            offer_order.push(gem.offer.as_str());
+        }
+        list.push(*gem);
+    }
+    let mut emitted: HashSet<String> = HashSet::new();
+    for offer in offer_order {
+        let list = &rewards[offer];
+        let chosen = gem_filter.map(|_| reward_index(list, &vendor_of, catalog));
+        for (index, gem) in list.iter().enumerate() {
+            if emitted.contains(gem.gem_id.as_str()) {
                 continue;
             }
-        }
-        let kind = match gem.source {
-            GemSource::Reward => EventKind::GemPick,
-            GemSource::Vendor => EventKind::GemBuy,
-        };
-        let cost_icon = buy_cost(kind, info.required_level);
-        let verb = match gem.source {
-            GemSource::Reward => "Pick",
-            GemSource::Vendor => "Buy",
-        };
-        let npc = if gem.npc.is_empty() {
-            quest.npc.clone()
-        } else {
-            gem.npc.clone()
-        };
-        let id = format!("gem-{}-{}", quest_id, info.id.replace('/', "_"));
-        if route.events.iter().any(|e| e.id == id) {
-            if !ids.iter().any(|existing| existing == &id) {
-                ids.push(id);
+            if chosen.is_none_or(|pick| index == pick) {
+                push_gem_event(
+                    catalog, route, ids, quest_id, gem, quest.npc.as_str(), GemSource::Reward,
+                    act, zone_name, start, end,
+                );
+                emitted.insert(gem.gem_id.clone());
+            } else if let Some(vendor) = vendor_of.get(gem.gem_id.as_str()) {
+                push_gem_event(
+                    catalog, route, ids, quest_id, vendor, quest.npc.as_str(), GemSource::Vendor,
+                    act, zone_name, start, end,
+                );
+                emitted.insert(gem.gem_id.clone());
             }
+        }
+    }
+    for gem in &gems {
+        if gem.source != GemSource::Vendor || emitted.contains(gem.gem_id.as_str()) {
             continue;
         }
-        ids.push(id.clone());
-        let place = gem_location(catalog, &npc, act, zone_name);
-        route.events.push(CampaignEvent {
-            id,
-            act,
-            text: format!(
-                "{verb} {} from {npc} in {}",
-                gem_color(&info.primary_attribute, &info.name),
-                loc(&place)
-            ),
-            detail: String::new(),
-            icon: format!("gem:{}", info.name),
-            kind,
-            start: start.to_vec(),
-            end: end.to_vec(),
-            gem_id: Some(info.id.clone()),
-            gem_name: Some(info.name.clone()),
-            npc: Some(npc),
-            zone_name: Some(zone_name.to_string()),
-            cost_icon,
-        });
+        push_gem_event(
+            catalog, route, ids, quest_id, gem, quest.npc.as_str(), GemSource::Vendor, act,
+            zone_name, start, end,
+        );
+        emitted.insert(gem.gem_id.clone());
     }
+}
+
+fn gem_wanted(
+    catalog: &Catalog,
+    gem: &QuestGem,
+    quest_id: &str,
+    offer_filter: &[String],
+    class_name: &str,
+    gem_filter: Option<&HashSet<String>>,
+) -> bool {
+    if quest_id == "a6q4" && gem.source == GemSource::Vendor {
+        return false;
+    }
+    if !offer_filter.is_empty() && !offer_filter.iter().any(|id| id == &gem.offer) {
+        return false;
+    }
+    if !gem.classes.is_empty()
+        && !gem
+            .classes
+            .iter()
+            .any(|class| class.eq_ignore_ascii_case(class_name))
+    {
+        return false;
+    }
+    let Some(info) = catalog.gem(&gem.gem_id) else {
+        return false;
+    };
+    gem_filter.is_none_or(|filter| filter.iter().any(|name| names_match(name, &info.name)))
+}
+
+fn reward_index(
+    rewards: &[&QuestGem],
+    vendor_of: &HashMap<&str, &QuestGem>,
+    catalog: &Catalog,
+) -> usize {
+    rewards
+        .iter()
+        .enumerate()
+        .max_by_key(|(_, gem)| {
+            let exclusive = !vendor_of.contains_key(gem.gem_id.as_str());
+            let level = catalog
+                .gem(&gem.gem_id)
+                .map(|info| info.required_level)
+                .unwrap_or(0);
+            (exclusive, level, std::cmp::Reverse(gem.gem_id.as_str()))
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(0)
+}
+
+fn push_gem_event(
+    catalog: &Catalog,
+    route: &mut CharacterRoute,
+    ids: &mut Vec<String>,
+    quest_id: &str,
+    gem: &QuestGem,
+    fallback_npc: &str,
+    source: GemSource,
+    act: u8,
+    zone_name: &str,
+    start: &[TriggerKind],
+    end: &[TriggerKind],
+) {
+    let Some(info) = catalog.gem(&gem.gem_id) else {
+        return;
+    };
+    let kind = match source {
+        GemSource::Reward => EventKind::GemPick,
+        GemSource::Vendor => EventKind::GemBuy,
+    };
+    let verb = match source {
+        GemSource::Reward => "Pick",
+        GemSource::Vendor => "Buy",
+    };
+    let npc = if gem.npc.is_empty() {
+        fallback_npc.to_string()
+    } else {
+        gem.npc.clone()
+    };
+    let id = format!("gem-{}-{}", quest_id, info.id.replace('/', "_"));
+    if route.events.iter().any(|event| event.id == id) {
+        if !ids.iter().any(|existing| existing == &id) {
+            ids.push(id);
+        }
+        return;
+    }
+    ids.push(id.clone());
+    let place = gem_location(catalog, &npc, act, zone_name);
+    route.events.push(CampaignEvent {
+        id,
+        act,
+        text: format!(
+            "{verb} {} from {npc} in {}",
+            gem_color(&info.primary_attribute, &info.name),
+            loc(&place)
+        ),
+        detail: String::new(),
+        icon: format!("gem:{}", info.name),
+        kind,
+        start: start.to_vec(),
+        end: end.to_vec(),
+        gem_id: Some(info.id.clone()),
+        gem_name: Some(info.name.clone()),
+        npc: Some(npc),
+        zone_name: Some(zone_name.to_string()),
+        cost_icon: buy_cost(kind, info.required_level),
+    });
+}
+
+fn act_town(catalog: &Catalog, act: u8) -> Option<String> {
+    catalog
+        .areas
+        .iter()
+        .find(|area| area.act == act && area.is_town)
+        .map(|area| area.id.clone())
 }
 
 fn names_match(pob: &str, catalog_name: &str) -> bool {
@@ -550,14 +682,23 @@ fn parse_act(
             area_id,
             quest_ids,
             act,
+            logout: body.contains("{logout}"),
         });
     }
     steps
 }
 
 fn hand_in_place(catalog: &Catalog, quest_ids: &[String], act: u8) -> Option<String> {
-    let npc = quest_ids.iter().find_map(|id| {
-        let quest = catalog.quest(id)?;
+    let (quest_id, offers) = quest_ids.split_first()?;
+    let quest = catalog.quest(quest_id)?;
+    let offered = offers.iter().find_map(|offer| {
+        quest
+            .gems
+            .iter()
+            .find(|gem| gem.offer == *offer && !gem.npc.is_empty())
+            .map(|gem| gem.npc.clone())
+    });
+    let npc = offered.or_else(|| {
         if quest.npc.is_empty() {
             None
         } else {
@@ -694,7 +835,12 @@ fn render_token(catalog: &Catalog, token: &str) -> (String, String, Option<Strin
         "quest_text" => (item(first), "quest".into(), None, Vec::new()),
         "generic" => (first.to_string(), "quest".into(), None, Vec::new()),
         "arena" => (loc(first), "quest".into(), None, Vec::new()),
-        "logout" => ("Logout".into(), "portalscroll".into(), None, Vec::new()),
+        "logout" => (
+            "Logout or Portal to Town".into(),
+            "portalscroll".into(),
+            None,
+            Vec::new(),
+        ),
         "trial" => (loc("Trial of Ascendancy"), "trial".into(), None, Vec::new()),
         "crafting" => (
             "Crafting recipe".into(),
@@ -922,6 +1068,7 @@ mod tests {
                     classes: vec!["Witch".into()],
                     npc: "Tarkleigh".into(),
                     source: GemSource::Reward,
+                    offer: String::new(),
                 }],
             }],
             routes: vec![(
@@ -946,7 +1093,10 @@ Get {waypoint_get}
 
     #[test]
     fn builds_zone_steps_and_class_gems() {
-        let route = build_route(&catalog(), "Witch", None, true);
+        let bare = build_route(&catalog(), "Witch", None, true);
+        assert!(bare.events.iter().all(|event| !event.kind.is_gem()));
+        let filter: HashSet<String> = ["Fireball"].into_iter().map(str::to_string).collect();
+        let route = build_route(&catalog(), "Witch", Some(&filter), true);
         assert!(route
             .events
             .iter()
@@ -1058,6 +1208,7 @@ Get {waypoint_get}
             classes: Vec::new(),
             npc: "Nessa".into(),
             source: GemSource::Vendor,
+            offer: String::new(),
         });
         data.quests.push(QuestInfo {
             id: "a6q4".into(),
@@ -1070,12 +1221,14 @@ Get {waypoint_get}
                     classes: Vec::new(),
                     npc: "Lilly Roth".into(),
                     source: GemSource::Vendor,
+                    offer: String::new(),
                 },
                 QuestGem {
                     gem_id: "added".into(),
                     classes: Vec::new(),
                     npc: "Lilly Roth".into(),
                     source: GemSource::Vendor,
+                    offer: String::new(),
                 },
             ],
         });
@@ -1149,6 +1302,7 @@ Get {waypoint_get}
                 classes: vec!["Witch".into()],
                 npc: "Tarkleigh".into(),
                 source: GemSource::Vendor,
+                offer: String::new(),
             }],
         });
         data.quests.push(QuestInfo {
@@ -1161,6 +1315,7 @@ Get {waypoint_get}
                 classes: vec!["Witch".into()],
                 npc: "Siosa".into(),
                 source: GemSource::Vendor,
+                offer: String::new(),
             }],
         });
         data.routes[0].1 = "\
@@ -1176,7 +1331,11 @@ Hand in {quest|a3q12} #A Fixture of Fate
 "
             .into(),
         ));
-        let route = build_route(&data, "Witch", None, true);
+        let filter: HashSet<String> = ["Fireball", "Frostblink"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let route = build_route(&data, "Witch", Some(&filter), true);
         let tarkleigh = route
             .events
             .iter()
@@ -1199,5 +1358,128 @@ Hand in {quest|a3q12} #A Fixture of Fate
             .unwrap();
         assert!(siosa.text.contains("{loc}The Library{/}"), "{}", siosa.text);
         assert!(!siosa.text.contains("Sarn"), "{}", siosa.text);
+    }
+
+    #[test]
+    fn one_reward_per_offer_and_logout_returns_to_town() {
+        let mut data = catalog();
+        data.gems.push(GemInfo {
+            id: "pulse".into(),
+            name: "Freezing Pulse".into(),
+            primary_attribute: "intelligence".into(),
+            required_level: 1,
+            is_support: false,
+        });
+        data.gems.push(GemInfo {
+            id: "blink".into(),
+            name: "Frostblink".into(),
+            primary_attribute: "dexterity".into(),
+            required_level: 4,
+            is_support: false,
+        });
+        data.quests[0].gems = vec![
+            QuestGem {
+                gem_id: "Metadata/Items/Gems/SkillGemFireball".into(),
+                classes: vec!["Witch".into()],
+                npc: "Tarkleigh".into(),
+                source: GemSource::Reward,
+                offer: "a1q1".into(),
+            },
+            QuestGem {
+                gem_id: "pulse".into(),
+                classes: vec!["Witch".into()],
+                npc: "Nessa".into(),
+                source: GemSource::Vendor,
+                offer: "a1q1".into(),
+            },
+            QuestGem {
+                gem_id: "pulse".into(),
+                classes: vec!["Witch".into()],
+                npc: "Tarkleigh".into(),
+                source: GemSource::Reward,
+                offer: "a1q1".into(),
+            },
+            QuestGem {
+                gem_id: "Metadata/Items/Gems/SkillGemFireball".into(),
+                classes: vec!["Witch".into()],
+                npc: "Nessa".into(),
+                source: GemSource::Vendor,
+                offer: "a1q1".into(),
+            },
+            QuestGem {
+                gem_id: "blink".into(),
+                classes: vec!["Witch".into()],
+                npc: "Tarkleigh".into(),
+                source: GemSource::Reward,
+                offer: "a1q1b".into(),
+            },
+        ];
+        data.quests.push(QuestInfo {
+            id: "a1q4".into(),
+            name: "Breaking Some Eggs".into(),
+            act: 1,
+            npc: "Tarkleigh".into(),
+            gems: Vec::new(),
+        });
+        data.routes[0].1 = "\
+➞ {enter|1_1_2a} #The Tidal Island
+Find and kill {kill|Hailrake}, take {quest_text|Medicine Chest}
+{logout}
+Hand in {quest|a1q1} #Enemy at the Gate
+Hand in {quest|a1q4} #Breaking Some Eggs
+{waypoint|1_1_2} #The Coast
+"
+        .into();
+        let filter: HashSet<String> = ["Fireball", "Freezing Pulse", "Frostblink"]
+            .into_iter()
+            .map(str::to_string)
+            .collect();
+        let route = build_route(&data, "Witch", Some(&filter), true);
+        let picks: Vec<_> = route
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::GemPick)
+            .collect();
+        let buys: Vec<_> = route
+            .events
+            .iter()
+            .filter(|event| event.kind == EventKind::GemBuy)
+            .collect();
+        assert_eq!(picks.len(), 2, "{picks:?}");
+        assert_eq!(buys.len(), 1, "{buys:?}");
+        assert!(buys[0].text.contains("Nessa"), "{}", buys[0].text);
+        assert!(picks.iter().any(|event| event.text.contains("Frostblink")));
+        let tidal = route
+            .groups
+            .iter()
+            .find(|group| group.name == "The Tidal Island")
+            .unwrap();
+        let last = route
+            .events
+            .iter()
+            .find(|event| event.id == *tidal.event_ids.last().unwrap())
+            .unwrap();
+        assert_eq!(last.text, "Logout or Portal to Town");
+        let eggs = route
+            .events
+            .iter()
+            .find(|event| event.text == "Hand in Breaking Some Eggs")
+            .unwrap();
+        let town = route
+            .groups
+            .iter()
+            .find(|group| group.event_ids.iter().any(|id| id == &eggs.id))
+            .unwrap();
+        assert_eq!(town.name, "Lioneye's Watch");
+        assert!(tidal.event_ids.iter().all(|id| id != &eggs.id));
+        let coast = route
+            .groups
+            .iter()
+            .find(|group| group.name == "The Coast")
+            .unwrap();
+        let tidal_at = route.groups.iter().position(|group| group.id == tidal.id).unwrap();
+        let town_at = route.groups.iter().position(|group| group.id == town.id).unwrap();
+        let coast_at = route.groups.iter().position(|group| group.id == coast.id).unwrap();
+        assert!(tidal_at < town_at && town_at < coast_at);
     }
 }
