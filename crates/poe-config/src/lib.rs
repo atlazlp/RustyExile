@@ -2,7 +2,7 @@ use eframe::egui::{self, Color32, RichText, TextureHandle, TextureOptions};
 use poe_core::{
     build_route, fetch_pob, install_build, parse_markup, restart_at_beach,
     tone_rgb, update_needs_permission, vendor_gem_regex, visible_lines, AppState, CampaignEvent,
-    CharacterFile, ChatCommand, EventGroup, EventKind, Experience, Hotkeys, HudCorner, TextTone,
+    CharacterFile, ChatCommand, EventGroup, Experience, Hotkeys, HudCorner, TextTone,
     TriggerKind, UpdateOutcome, VERSION,
 };
 use std::collections::HashMap;
@@ -1070,11 +1070,12 @@ impl UiApp {
                                                         event.icon.clone()
                                                     };
                                                     self.icon_ui(ui, &icon, 22.0);
-                                                    let extra = if event.kind == EventKind::GemBuy {
-                                                        self.icon_ui(ui, "wisdom", 14.0);
-                                                        22.0
-                                                    } else {
+                                                    let cost = event.kind.shown_cost(&event.cost_icon);
+                                                    let extra = if cost.is_empty() {
                                                         0.0
+                                                    } else {
+                                                        self.icon_ui(ui, cost, 14.0);
+                                                        22.0
                                                     };
                                                     let text_w = (ui.available_width() - extra).max(40.0);
                                                     let response = ui.add_sized(

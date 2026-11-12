@@ -1,4 +1,5 @@
 use crate::draw::Painter;
+use crate::gemfind::{self, GemPass, GemWatch};
 use crate::hypr::{self, GameWindow, Monitor};
 use anyhow::Context;
 use poe_core::{visible_lines, AppState};
@@ -22,7 +23,7 @@ use smithay_client_toolkit::shm::slot::SlotPool;
 use smithay_client_toolkit::shm::{Shm, ShmHandler};
 use std::os::fd::AsRawFd;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     let conn = Connection::connect_to_env().context("wayland connection")?;
@@ -58,11 +59,37 @@ pub fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         drag: None,
         panel_origin: (16, 16),
         panel_limit: (i32::MAX, i32::MAX),
+        gem_layer: None,
+        gem_ready: false,
+        gem_geom: None,
+        pending_gem: None,
+        gem_watch: GemWatch::spawn(capture_grim),
+        last_gem_submit: Instant::now() - Duration::from_secs(2),
     };
     loop {
         dispatch_timeout(&conn, &mut queue, &mut app, 40)?;
         app.sync(&qh);
     }
+}
+
+fn capture_grim(x: i32, y: i32, width: u32, height: u32) -> Option<image::RgbImage> {
+    if width == 0 || height == 0 || hypr::screenshot_paused() {
+        return None;
+    }
+    let output = std::process::Command::new("grim")
+        .args([
+            "-g",
+            &format!("{x},{y} {width}x{height}"),
+            "-t",
+            "ppm",
+            "-",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    gemfind::parse_ppm(&output.stdout)
 }
 
 fn dispatch_timeout(
@@ -150,6 +177,12 @@ struct Overlay {
     drag: Option<PanelDrag>,
     panel_origin: (i32, i32),
     panel_limit: (i32, i32),
+    gem_layer: Option<LayerSurface>,
+    gem_ready: bool,
+    gem_geom: Option<(i32, i32, u32, u32)>,
+    pending_gem: Option<PendingPaint>,
+    gem_watch: GemWatch,
+    last_gem_submit: Instant,
 }
 
 #[derive(Clone)]
@@ -233,10 +266,8 @@ impl Overlay {
         let Ok(mut shared) = self.shared.lock() else {
             return;
         };
-        if shared.settings.custom_x.is_none() {
-            shared.settings.custom_x = Some(self.panel_origin.0);
-            shared.settings.custom_y = Some(self.panel_origin.1);
-        }
+        shared.settings.custom_x = Some(self.panel_origin.0);
+        shared.settings.custom_y = Some(self.panel_origin.1);
         shared.settings.corner = poe_core::HudCorner::Custom;
         shared.hud_placing = false;
         shared.dirty_settings = true;
@@ -392,6 +423,7 @@ impl Overlay {
             self.unmap();
             return;
         };
+        let (space_w, space_h, base_x, base_y) = placement_space(&window, &monitors, ox, oy);
         let output_id = self.output_state.info(&output).map(|info| info.id);
         if self.layer.is_some() && output_id.is_some() && self.bound_output != output_id {
             self.unmap();
@@ -400,8 +432,8 @@ impl Overlay {
         if self.layer.is_none() || self.last_sig != full_sig {
             self.last_sig = full_sig.clone();
             let frame = self.painter.paint(
-                window.w,
-                window.h,
+                space_w,
+                space_h,
                 &snap.lines,
                 &snap.theme,
                 snap.opacity,
@@ -413,12 +445,12 @@ impl Overlay {
             );
             let [px, py, pw, ph] = frame.panel;
             self.panel_origin = (px, py);
-            self.panel_limit = ((window.w as i32 - pw).max(0), (window.h as i32 - ph).max(0));
+            self.panel_limit = ((space_w as i32 - pw).max(0), (space_h as i32 - ph).max(0));
             self.ensure_layer(
                 qh,
                 &output,
-                window.x - ox + px,
-                window.y - oy + py,
+                base_x - ox + px,
+                base_y - oy + py,
                 pw.max(1) as u32,
                 ph.max(1) as u32,
             );
@@ -435,8 +467,8 @@ impl Overlay {
                 self.ensure_button(
                     qh,
                     &output,
-                    window.x - ox + button.x,
-                    window.y - oy + button.y,
+                    base_x - ox + button.x,
+                    base_y - oy + button.y,
                     button.w,
                     button.h,
                 );
@@ -454,6 +486,7 @@ impl Overlay {
                 self.pending_button = None;
             }
         }
+        self.pump_gems(qh, &output, ox, oy, &window, &snap.lines);
     }
 
     fn ensure_layer(
@@ -517,40 +550,165 @@ impl Overlay {
     fn unmap(&mut self) {
         self.layer = None;
         self.button_layer = None;
+        self.gem_layer = None;
         self.layer_ready = false;
         self.button_ready = false;
+        self.gem_ready = false;
+        self.gem_geom = None;
         self.pending = None;
         self.pending_button = None;
+        self.pending_gem = None;
         self.last_sig.clear();
         self.hits.clear();
+        self.clear_gem_spots();
     }
 
     fn flush_layer(&mut self, qh: &QueueHandle<Self>) {
-        let Some(layer) = self.layer.clone() else {
-            return;
-        };
-        if !self.layer_ready {
-            layer.commit();
-            return;
-        }
-        let Some(paint) = self.pending.clone() else {
-            return;
-        };
-        self.attach(&layer, qh, &paint, true);
+        self.flush_paint(
+            qh,
+            self.layer.clone(),
+            self.layer_ready,
+            self.pending.clone(),
+            true,
+        );
     }
 
     fn flush_button(&mut self, qh: &QueueHandle<Self>) {
-        let Some(layer) = self.button_layer.clone() else {
+        self.flush_paint(
+            qh,
+            self.button_layer.clone(),
+            self.button_ready,
+            self.pending_button.clone(),
+            false,
+        );
+    }
+
+    fn flush_paint(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        layer: Option<LayerSurface>,
+        ready: bool,
+        pending: Option<PendingPaint>,
+        input: bool,
+    ) {
+        let Some(layer) = layer else {
             return;
         };
-        if !self.button_ready {
+        if !ready {
             layer.commit();
             return;
         }
-        let Some(paint) = self.pending_button.clone() else {
+        let Some(paint) = pending else {
             return;
         };
-        self.attach(&layer, qh, &paint, false);
+        self.attach(&layer, qh, &paint, input);
+    }
+
+    fn pump_gems(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        output: &wl_output::WlOutput,
+        ox: i32,
+        oy: i32,
+        window: &GameWindow,
+        lines: &[poe_core::VisibleLine],
+    ) {
+        let town = self.shared.lock().ok().is_some_and(|shared| shared.in_town());
+        match self.gem_watch.advance(
+            &mut self.last_gem_submit,
+            town,
+            window.x,
+            window.y,
+            window.w,
+            window.h,
+            lines,
+        ) {
+            GemPass::Idle => self.clear_gems(),
+            GemPass::Pending => {}
+            GemPass::Ready(marks) => {
+                if let Ok(mut shared) = self.shared.lock() {
+                    shared.gem_spots = gemfind::spots(&marks);
+                }
+                self.show_gems(qh, output, ox, oy, window, &marks);
+            }
+        }
+    }
+
+    fn clear_gems(&mut self) {
+        if self.gem_layer.is_none() && self.pending_gem.is_none() {
+            self.clear_gem_spots();
+            return;
+        }
+        self.gem_layer = None;
+        self.gem_ready = false;
+        self.gem_geom = None;
+        self.pending_gem = None;
+        self.clear_gem_spots();
+    }
+
+    fn clear_gem_spots(&mut self) {
+        if let Ok(mut shared) = self.shared.lock() {
+            if !shared.gem_spots.is_empty() {
+                shared.gem_spots.clear();
+            }
+        }
+    }
+
+    fn show_gems(
+        &mut self,
+        qh: &QueueHandle<Self>,
+        output: &wl_output::WlOutput,
+        ox: i32,
+        oy: i32,
+        window: &GameWindow,
+        marks: &[gemfind::GemMark],
+    ) {
+        let (width, height) = gemfind::search_size(window.w, window.h);
+        let geom = (window.x - ox, window.y - oy, width, height);
+        if marks.is_empty() && self.gem_layer.is_none() {
+            return;
+        }
+        if self.gem_layer.is_none() {
+            let surface = self.compositor.create_surface(qh);
+            let layer = self.layer_shell.create_layer_surface(
+                qh,
+                surface,
+                Layer::Overlay,
+                Some("RustyExile-gems"),
+                Some(output),
+            );
+            layer.set_anchor(Anchor::TOP | Anchor::LEFT);
+            layer.set_keyboard_interactivity(KeyboardInteractivity::None);
+            layer.set_exclusive_zone(0);
+            self.gem_layer = Some(layer);
+            self.gem_ready = false;
+            self.gem_geom = None;
+        }
+        if self.gem_geom != Some(geom) {
+            if let Some(layer) = &self.gem_layer {
+                place_layer(layer, geom.0, geom.1, geom.2, geom.3);
+            }
+            self.gem_geom = Some(geom);
+        }
+        let bgra = gemfind::compose_canvas(marks, window.x, window.y, width, height, poe_data::load_icon);
+        self.pending_gem = Some(PendingPaint {
+            width,
+            height,
+            bgra,
+            hits: Vec::new(),
+            interactive: false,
+        });
+        self.flush_gem(qh);
+    }
+
+    fn flush_gem(&mut self, qh: &QueueHandle<Self>) {
+        self.flush_paint(
+            qh,
+            self.gem_layer.clone(),
+            self.gem_ready,
+            self.pending_gem.clone(),
+            true,
+        );
     }
 
     fn attach(
@@ -609,16 +767,36 @@ fn place_layer(layer: &LayerSurface, x: i32, y: i32, width: u32, height: u32) {
     layer.set_margin(y, 0, 0, x);
 }
 
-fn monitor_origin(window: &GameWindow, monitors: &[Monitor]) -> Option<(i32, i32)> {
-    let monitor = monitors
+fn window_monitor<'a>(window: &GameWindow, monitors: &'a [Monitor]) -> Option<&'a Monitor> {
+    monitors
         .iter()
         .find(|monitor| monitor.id == window.monitor)
-        .or_else(|| {
-            monitors
-                .iter()
-                .find(|monitor| contains_window(window, monitor))
-        })?;
-    Some((monitor.x, monitor.y))
+        .or_else(|| monitors.iter().find(|monitor| contains_window(window, monitor)))
+}
+
+fn monitor_origin(window: &GameWindow, monitors: &[Monitor]) -> Option<(i32, i32)> {
+    window_monitor(window, monitors).map(|monitor| (monitor.x, monitor.y))
+}
+
+fn placement_space(
+    window: &GameWindow,
+    monitors: &[Monitor],
+    origin_x: i32,
+    origin_y: i32,
+) -> (u32, u32, i32, i32) {
+    let Some(monitor) = window_monitor(window, monitors) else {
+        return (window.w, window.h, window.x, window.y);
+    };
+    let near = |a: i32, b: i32| (a - b).abs() <= 80;
+    if near(window.w as i32, monitor.w)
+        && near(window.h as i32, monitor.h)
+        && near(window.x, origin_x)
+        && near(window.y, origin_y)
+    {
+        (monitor.w as u32, monitor.h as u32, origin_x, origin_y)
+    } else {
+        (window.w, window.h, window.x, window.y)
+    }
 }
 
 fn contains_window(window: &GameWindow, monitor: &Monitor) -> bool {
@@ -639,14 +817,7 @@ fn pick_output(
     window: &GameWindow,
     monitors: &[Monitor],
 ) -> Option<wl_output::WlOutput> {
-    let monitor = monitors
-        .iter()
-        .find(|monitor| monitor.id == window.monitor)
-        .or_else(|| {
-            monitors
-                .iter()
-                .find(|monitor| contains_window(window, monitor))
-        })?;
+    let monitor = window_monitor(window, monitors)?;
     for output in outputs.outputs() {
         let Some(info) = outputs.info(&output) else {
             continue;
@@ -719,18 +890,21 @@ impl LayerShellHandler for Overlay {
         configure: LayerSurfaceConfigure,
         _: u32,
     ) {
-        if configure.new_size.0 > 0 {
-            self.width = configure.new_size.0;
-        }
-        if configure.new_size.1 > 0 {
-            self.height = configure.new_size.1;
-        }
         if self.layer.as_ref() == Some(layer) {
+            if configure.new_size.0 > 0 {
+                self.width = configure.new_size.0;
+            }
+            if configure.new_size.1 > 0 {
+                self.height = configure.new_size.1;
+            }
             self.layer_ready = true;
             self.flush_layer(qh);
         } else if self.button_layer.as_ref() == Some(layer) {
             self.button_ready = true;
             self.flush_button(qh);
+        } else if self.gem_layer.as_ref() == Some(layer) {
+            self.gem_ready = true;
+            self.flush_gem(qh);
         }
     }
 }

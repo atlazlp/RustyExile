@@ -22,8 +22,11 @@ pub use markup::{parse_markup, plain_text, tone_rgb, TextSpan, TextTone};
 pub use model::*;
 pub use pob::{apply_pob, decode_pob, fetch_pob, PobBuild};
 pub use regexes::{default_presets, default_regex_index, vendor_gem_regex};
-pub use route::{build_route, build_route_with, install_build, refresh_generated_route};
-pub use state::AppState;
+pub use route::{
+    build_route, build_route_with, fill_vendor_costs, install_build, refresh_generated_route,
+    vendor_cost_icon,
+};
+pub use state::{AppState, GemSpot};
 pub use store::{
     delete_character, list_characters, load_catalog, load_character, load_regex_presets,
     load_settings, read_log_tail, save_catalog, save_character, save_regex_presets, save_settings,

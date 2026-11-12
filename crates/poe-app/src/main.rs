@@ -1,8 +1,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
 use poe_core::{
-    apply_parsed, detect_running, load_catalog, load_character, load_regex_presets, load_settings,
-    note_current_zone, nudge_events, read_log_tail, refresh_generated_route, save_catalog,
+    apply_parsed, detect_running, fill_vendor_costs, load_catalog, load_character,
+    load_regex_presets, load_settings, note_current_zone, nudge_events, read_log_tail,
+    refresh_generated_route, save_catalog,
     save_character, save_regex_presets, save_settings, sync_skipped, vendor_gem_regex,
     visible_lines, AppState, CharacterFile, LogFollow, LogParser, ParsedLog,
 };
@@ -74,6 +75,9 @@ fn load_state() -> AppState {
             refresh_generated_route(character, &catalog, settings.league_start);
             dirty_characters = true;
         }
+        if fill_vendor_costs(character, &catalog) {
+            dirty_characters = true;
+        }
     }
     AppState {
         settings,
@@ -93,6 +97,7 @@ fn load_state() -> AppState {
         alt_down: false,
         capturing_hotkey: false,
         hud_placing: false,
+        gem_spots: Vec::new(),
     }
 }
 
@@ -421,7 +426,10 @@ fn evdev_loop(state: Arc<Mutex<AppState>>) {
         let Some(keys) = device.supported_keys() else {
             continue;
         };
-        if !keys.contains(evdev::KeyCode::KEY_LEFTCTRL) && !keys.contains(evdev::KeyCode::KEY_A) {
+        let keyboard = keys.contains(evdev::KeyCode::KEY_LEFTCTRL)
+            || keys.contains(evdev::KeyCode::KEY_A);
+        let pointer = keys.contains(evdev::KeyCode::BTN_LEFT);
+        if !keyboard && !pointer {
             continue;
         }
         let _ = device.set_nonblocking(true);
@@ -457,6 +465,12 @@ fn evdev_loop(state: Arc<Mutex<AppState>>) {
                 }
                 let down = event.value() == 1;
                 let key = evdev::KeyCode::new(event.code());
+                if key == evdev::KeyCode::BTN_LEFT {
+                    if down {
+                        click_gem_spot(&state);
+                    }
+                    continue;
+                }
                 let name = match key {
                     evdev::KeyCode::KEY_LEFTCTRL | evdev::KeyCode::KEY_RIGHTCTRL => {
                         held[index].ctrl = down;
@@ -503,6 +517,16 @@ fn evdev_loop(state: Arc<Mutex<AppState>>) {
             app.shift_down = shift;
         }
         std::thread::sleep(Duration::from_millis(8));
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn click_gem_spot(state: &Arc<Mutex<AppState>>) {
+    let Some((x, y)) = poe_overlay::cursor_pos() else {
+        return;
+    };
+    if let Ok(mut app) = state.lock() {
+        app.click_gem(x, y);
     }
 }
 

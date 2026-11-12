@@ -93,6 +93,7 @@ pub fn build_route_with(
                 gem_name: None,
                 npc: None,
                 zone_name: Some(zone_name.clone()),
+                cost_icon: String::new(),
             });
             for quest_id in &step.quest_ids {
                 push_quest_gems(
@@ -168,6 +169,7 @@ fn push_quest_gems(
             GemSource::Reward => EventKind::GemPick,
             GemSource::Vendor => EventKind::GemBuy,
         };
+        let cost_icon = buy_cost(kind, info.required_level);
         let verb = match gem.source {
             GemSource::Reward => "Pick",
             GemSource::Vendor => "Buy",
@@ -203,6 +205,7 @@ fn push_quest_gems(
             gem_name: Some(info.name.clone()),
             npc: Some(npc),
             zone_name: Some(zone_name.to_string()),
+            cost_icon,
         });
     }
 }
@@ -304,6 +307,7 @@ fn add_lilly_and_trials(
             gem_name: Some(info.name.clone()),
             npc: Some("Lilly Roth".into()),
             zone_name: Some("Lioneye's Watch".into()),
+            cost_icon: buy_cost(EventKind::GemBuy, info.required_level),
         });
     }
 }
@@ -397,7 +401,54 @@ fn push_trial(route: &mut CharacterRoute, catalog: &Catalog, name: &str) {
         gem_name: Some(name.to_string()),
         npc: None,
         zone_name: Some("Aspirant's Trial".into()),
+        cost_icon: String::new(),
     });
+}
+
+fn buy_cost(kind: EventKind, level: u32) -> String {
+    if kind == EventKind::GemBuy {
+        vendor_cost_icon(level).to_string()
+    } else {
+        String::new()
+    }
+}
+
+pub fn vendor_cost_icon(required_level: u32) -> &'static str {
+    if required_level < 8 {
+        "wisdom"
+    } else if required_level < 16 {
+        "transmutation"
+    } else if required_level < 28 {
+        "alteration"
+    } else if required_level < 38 {
+        "chance"
+    } else {
+        "alchemy"
+    }
+}
+
+pub fn fill_vendor_costs(file: &mut crate::model::CharacterFile, catalog: &Catalog) -> bool {
+    let mut changed = false;
+    for event in &mut file.route.events {
+        if event.kind != EventKind::GemBuy || !event.cost_icon.is_empty() {
+            continue;
+        }
+        let level = event
+            .gem_id
+            .as_deref()
+            .and_then(|id| catalog.gem(id))
+            .or_else(|| {
+                event
+                    .gem_name
+                    .as_deref()
+                    .and_then(|name| catalog.gem_by_name(name))
+            })
+            .map(|gem| gem.required_level)
+            .unwrap_or(1);
+        event.cost_icon = vendor_cost_icon(level).to_string();
+        changed = true;
+    }
+    changed
 }
 
 fn assign_leading_area(steps: &mut [RawStep], catalog: &Catalog) {
@@ -807,6 +858,20 @@ pub fn class_matches(gem: &QuestGem, class_name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::model::{GemInfo, QuestInfo};
+
+    #[test]
+    fn vendor_cost_follows_the_gem_drop_level() {
+        assert_eq!(vendor_cost_icon(1), "wisdom");
+        assert_eq!(vendor_cost_icon(4), "wisdom");
+        assert_eq!(vendor_cost_icon(8), "transmutation");
+        assert_eq!(vendor_cost_icon(12), "transmutation");
+        assert_eq!(vendor_cost_icon(16), "alteration");
+        assert_eq!(vendor_cost_icon(24), "alteration");
+        assert_eq!(vendor_cost_icon(28), "chance");
+        assert_eq!(vendor_cost_icon(34), "chance");
+        assert_eq!(vendor_cost_icon(38), "alchemy");
+        assert_eq!(vendor_cost_icon(72), "alchemy");
+    }
 
     fn catalog() -> Catalog {
         Catalog {

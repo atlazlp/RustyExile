@@ -1,4 +1,5 @@
 use crate::draw::{Frame, Hit, Painter};
+use crate::gemfind::{self, GemPass, GemWatch};
 use poe_core::{
     force_complete, nudge_events, nudge_groups, parse_chord, visible_lines, AppState, HudCorner,
 };
@@ -13,8 +14,8 @@ use windows::Win32::Foundation::{
     LRESULT, POINT, RECT, SIZE, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC, SelectObject,
-    BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ,
+    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
+    SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
 };
 use windows::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION};
 use windows::Win32::System::Threading::{
@@ -24,7 +25,7 @@ use windows::Win32::System::Threading::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, SendInput, UnregisterHotKey, INPUT, INPUT_0, INPUT_KEYBOARD,
     KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP, MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, MOD_SHIFT,
-    VIRTUAL_KEY, VK_A, VK_CONTROL, VK_MENU, VK_RETURN, VK_V,
+    VIRTUAL_KEY, VK_A, VK_CONTROL, VK_LBUTTON, VK_MENU, VK_RETURN, VK_V,
 };
 use windows::Win32::UI::Shell::{
     SetCurrentProcessExplicitAppUserModelID, Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP,
@@ -150,6 +151,10 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
     RegisterClassW(std::ptr::addr_of!(class));
     let panel = create_popup(class_name)?;
     let button = create_popup(class_name)?;
+    let gems = create_popup(class_name)?;
+    let gem_watch = GemWatch::spawn(capture_desktop);
+    let mut last_gem_submit = Instant::now() - Duration::from_secs(2);
+    let mut gem_down = false;
     let tray_icon = add_tray_icon(panel);
     if let Ok(mut click) = CLICK.lock() {
         click.app = Some(Arc::clone(&state));
@@ -189,12 +194,12 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
             DispatchMessageW(&msg);
         }
         let Some(game) = find_poe_window() else {
-            conceal(panel, button, &mut last);
+            conceal(panel, button, gems, &mut last);
             std::thread::sleep(std::time::Duration::from_millis(200));
             continue;
         };
         if GetForegroundWindow() != game || IsIconic(game).as_bool() {
-            conceal(panel, button, &mut last);
+            conceal(panel, button, gems, &mut last);
             std::thread::sleep(std::time::Duration::from_millis(50));
             continue;
         }
@@ -227,7 +232,7 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         sync_hotkeys(panel, &shared, &mut hotkey_sig);
         if !shared.hud_enabled || !shared.settings.experience_chosen {
             drop(shared);
-            conceal(panel, button, &mut last);
+            conceal(panel, button, gems, &mut last);
             std::thread::sleep(std::time::Duration::from_millis(30));
             continue;
         }
@@ -295,8 +300,152 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
                 last = sig;
             }
         }
+        let town = state.lock().ok().is_some_and(|shared| shared.in_town());
+        sync_gem_window(
+            gems,
+            &state,
+            &gem_watch,
+            &mut last_gem_submit,
+            rect.left,
+            rect.top,
+            width,
+            height,
+            &lines,
+            town,
+        );
+        let pressed = GetAsyncKeyState(VK_LBUTTON.0 as i32) < 0;
+        if pressed && !gem_down {
+            click_gem_spot(&state);
+        }
+        gem_down = pressed;
         std::thread::sleep(std::time::Duration::from_millis(30));
     }
+}
+
+fn click_gem_spot(state: &Arc<Mutex<AppState>>) {
+    let mut cursor = POINT::default();
+    if unsafe { GetCursorPos(std::ptr::addr_of_mut!(cursor)) }.is_err() {
+        return;
+    }
+    if let Ok(mut shared) = state.lock() {
+        shared.click_gem(cursor.x, cursor.y);
+    }
+}
+
+fn sync_gem_window(
+    hwnd: HWND,
+    state: &Arc<Mutex<AppState>>,
+    watch: &GemWatch,
+    last_submit: &mut Instant,
+    origin_x: i32,
+    origin_y: i32,
+    window_w: u32,
+    window_h: u32,
+    lines: &[poe_core::VisibleLine],
+    town: bool,
+) {
+    match watch.advance(
+        last_submit,
+        town,
+        origin_x,
+        origin_y,
+        window_w,
+        window_h,
+        lines,
+    ) {
+        GemPass::Idle => {
+            if let Ok(mut shared) = state.lock() {
+                shared.gem_spots.clear();
+            }
+            unsafe { hide_layered(hwnd) };
+        }
+        GemPass::Pending => {}
+        GemPass::Ready(marks) => {
+            if let Ok(mut shared) = state.lock() {
+                shared.gem_spots = gemfind::spots(&marks);
+            }
+            let Some(frame) = gemfind::compose(&marks, poe_data::load_icon) else {
+                unsafe { hide_layered(hwnd) };
+                return;
+            };
+            unsafe {
+                reveal(hwnd);
+                move_layered(hwnd, frame.x, frame.y, frame.width, frame.height, &frame.bgra);
+                set_click_through(hwnd, true);
+                reveal(hwnd);
+            }
+        }
+    }
+}
+
+fn capture_desktop(x: i32, y: i32, width: u32, height: u32) -> Option<image::RgbImage> {
+    if width == 0 || height == 0 || width > 8000 || height > 8000 {
+        return None;
+    }
+    unsafe { capture_desktop_inner(x, y, width, height) }
+}
+
+unsafe fn capture_desktop_inner(x: i32, y: i32, width: u32, height: u32) -> Option<image::RgbImage> {
+    let screen = GetDC(None);
+    let mem = CreateCompatibleDC(Some(screen));
+    let info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width as i32,
+            biHeight: -(height as i32),
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB.0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut bits = std::ptr::null_mut();
+    let bitmap = CreateDIBSection(
+        Some(mem),
+        std::ptr::addr_of!(info),
+        DIB_RGB_COLORS,
+        std::ptr::addr_of_mut!(bits),
+        None,
+        0,
+    )
+    .unwrap_or_default();
+    if bitmap.0.is_null() || bits.is_null() {
+        let _ = DeleteDC(mem);
+        let _ = ReleaseDC(None, screen);
+        return None;
+    }
+    let old = SelectObject(mem, HGDIOBJ(bitmap.0));
+    let copied = BitBlt(
+        mem,
+        0,
+        0,
+        width as i32,
+        height as i32,
+        Some(screen),
+        x,
+        y,
+        SRCCOPY,
+    )
+    .is_ok();
+    let mut rgb = vec![0u8; (width * height * 3) as usize];
+    if copied {
+        let src = std::slice::from_raw_parts(bits as *const u8, (width * height * 4) as usize);
+        for (index, pixel) in src.chunks_exact(4).enumerate() {
+            let offset = index * 3;
+            rgb[offset] = pixel[2];
+            rgb[offset + 1] = pixel[1];
+            rgb[offset + 2] = pixel[0];
+        }
+    }
+    SelectObject(mem, old);
+    let _ = DeleteObject(HGDIOBJ(bitmap.0));
+    let _ = DeleteDC(mem);
+    let _ = ReleaseDC(None, screen);
+    if !copied {
+        return None;
+    }
+    image::RgbImage::from_raw(width, height, rgb)
 }
 
 unsafe fn create_popup(class_name: windows::core::PCWSTR) -> anyhow::Result<HWND> {
@@ -508,13 +657,18 @@ unsafe fn place_button(hwnd: HWND, frame: &Frame, origin_x: i32, origin_y: i32, 
     reveal(hwnd);
 }
 
-unsafe fn conceal(panel: HWND, button: HWND, last: &mut String) {
-    if last.is_empty() && !IsWindowVisible(panel).as_bool() && !IsWindowVisible(button).as_bool() {
+unsafe fn conceal(panel: HWND, button: HWND, gems: HWND, last: &mut String) {
+    if last.is_empty()
+        && !IsWindowVisible(panel).as_bool()
+        && !IsWindowVisible(button).as_bool()
+        && !IsWindowVisible(gems).as_bool()
+    {
         return;
     }
     last.clear();
     hide_layered(panel);
     hide_layered(button);
+    hide_layered(gems);
 }
 
 unsafe fn hide_layered(hwnd: HWND) {

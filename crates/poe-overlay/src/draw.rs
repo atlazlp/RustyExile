@@ -1,5 +1,5 @@
 use cosmic_text::{Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight};
-use poe_core::{parse_markup, tone_rgb, EventKind, HudCorner, TextTone, Theme, VisibleLine};
+use poe_core::{parse_markup, tone_rgb, HudCorner, TextTone, Theme, VisibleLine};
 use std::collections::HashMap;
 use tiny_skia::{Color as SkColor, FillRule, Paint, PathBuilder, Pixmap, Rect, Transform};
 
@@ -178,10 +178,11 @@ impl Painter {
             let mid = y as f32 + text_block as f32 / 2.0;
             let icon_y = (mid - icon_px as f32 / 2.0).round() as i32;
             self.blit_icon(&mut pixmap, row.line.icon.as_str(), 8, icon_y, icon_px);
-            if row.line.kind == EventKind::GemBuy {
+            let cost = row.line.kind.shown_cost(&row.line.cost_icon);
+            if !cost.is_empty() {
                 self.blit_icon(
                     &mut pixmap,
-                    "wisdom",
+                    cost,
                     8 + icon_px as i32 - 8,
                     icon_y + icon_px as i32 - 6,
                     12,
@@ -547,10 +548,10 @@ fn place(
 ) -> (i32, i32) {
     let max_x = sw.saturating_sub(pw) as i32;
     let max_y = sh.saturating_sub(ph) as i32;
-    let clamp = |x: i32, y: i32| (x.clamp(0, max_x.max(0)), y.clamp(0, max_y.max(0)));
+    let settle = |x: i32, y: i32| (stick(x, max_x), stick(y, max_y));
     if placing {
         if let Some((x, y)) = custom {
-            return clamp(x, y);
+            return settle(x, y);
         }
     }
     match corner {
@@ -559,8 +560,23 @@ fn place(
         HudCorner::BottomLeft => (margin, max_y - margin),
         HudCorner::BottomRight => (max_x - margin, max_y - margin),
         HudCorner::Custom => custom
-            .map(|(x, y)| clamp(x, y))
+            .map(|(x, y)| settle(x, y))
             .unwrap_or((max_x - margin, margin)),
+    }
+}
+
+fn stick(pos: i32, max: i32) -> i32 {
+    const STICK: i32 = 64;
+    let max = max.max(0);
+    let pos = pos.clamp(0, max);
+    let to_start = pos;
+    let to_end = max - pos;
+    if to_start <= STICK && to_start <= to_end {
+        0
+    } else if to_end <= STICK {
+        max
+    } else {
+        pos
     }
 }
 
@@ -614,6 +630,41 @@ fn rgba_to_bgra(rgba: &[u8]) -> Vec<u8> {
         dst[3] = src[3];
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_panel_near_the_right_edge_stays_flush() {
+        let (x, y) = place(
+            HudCorner::Custom,
+            1920,
+            1080,
+            300,
+            106,
+            16,
+            Some((1580, 484)),
+            false,
+        );
+        assert_eq!((x, y), (1620, 484));
+    }
+
+    #[test]
+    fn a_panel_away_from_the_edge_keeps_its_place() {
+        let (x, y) = place(
+            HudCorner::Custom,
+            1920,
+            1080,
+            300,
+            106,
+            16,
+            Some((900, 484)),
+            false,
+        );
+        assert_eq!((x, y), (900, 484));
+    }
 }
 
 fn blend(pixmap: &mut Pixmap, x: i32, y: i32, pixel: u32) {

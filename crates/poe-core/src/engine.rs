@@ -2,8 +2,8 @@ use std::collections::HashSet;
 
 use crate::logparse::ParsedLog;
 use crate::model::{
-    CampaignEvent, CharacterFile, CharacterProgress, CharacterRoute, EventKind, TriggerKind,
-    VisibleLine,
+    CampaignEvent, CharacterFile, CharacterProgress, CharacterRoute, EventGroup, EventKind,
+    TriggerKind, VisibleLine,
 };
 
 pub fn trigger_fired(trigger: &TriggerKind, progress: &CharacterProgress) -> bool {
@@ -237,6 +237,12 @@ fn resolve_area_id(
         }) {
             return zone_area(group).map(|area| area.to_string());
         }
+        let known = route.groups.iter().any(|group| {
+            zone_area(group).is_some_and(|area| area == id || area.trim_end_matches('_') == trimmed)
+        });
+        if !known {
+            return Some(id.to_string());
+        }
     }
     let anchor = anchor_index(route, progress)
         .or_else(|| frontier_index(route, progress))
@@ -458,6 +464,7 @@ fn title_line(id: &str, name: &str, act: u8) -> VisibleLine {
         act,
         kind: EventKind::Step,
         is_header: true,
+        cost_icon: String::new(),
     }
 }
 
@@ -476,6 +483,7 @@ fn line_from(event: &CampaignEvent, show_tips: bool) -> VisibleLine {
         act: event.act,
         kind: event.kind,
         is_header: false,
+        cost_icon: event.kind.shown_cost(&event.cost_icon).to_string(),
     }
 }
 
@@ -559,12 +567,113 @@ pub fn restart_at_beach(file: &mut CharacterFile) {
         file.progress.class_name.clone()
     };
     file.class_name = class_name.clone();
+    ensure_act1_beach(file);
+    let anchor = file
+        .route
+        .groups
+        .iter()
+        .find(|group| zone_area(group) == Some("1_1_1"))
+        .map(|group| group.id.clone());
     file.progress = CharacterProgress {
         class_name,
         level: 1,
+        zone_name: "The Twilight Strand".into(),
+        area_id: "1_1_1".into(),
+        highest_act: 1,
+        anchor_group: anchor,
+        entered_areas: ["1_1_1".to_string()].into_iter().collect(),
+        entered_names: ["The Twilight Strand".to_string()].into_iter().collect(),
         ..CharacterProgress::default()
     };
-    note_current_zone(file, "The Twilight Strand", Some("1_1_1"), Some(1));
+    note_zone_kind(
+        &mut file.progress,
+        "The Twilight Strand",
+        "1_1_1",
+    );
+}
+
+fn ensure_act1_beach(file: &mut CharacterFile) {
+    if let Some(index) = file
+        .route
+        .groups
+        .iter()
+        .position(|group| zone_area(group) == Some("1_1_1"))
+    {
+        if index != 0 {
+            let group = file.route.groups.remove(index);
+            file.route.groups.insert(0, group);
+        }
+        return;
+    }
+    let event_id = beach_event(file);
+    for group in &mut file.route.groups {
+        group.event_ids.retain(|id| id != &event_id);
+    }
+    file.route
+        .groups
+        .retain(|group| !group.event_ids.is_empty());
+    let mut id = "g1-beach".to_string();
+    let mut n = 2u32;
+    while file.route.groups.iter().any(|group| group.id == id) {
+        id = format!("g1-beach-{n}");
+        n += 1;
+    }
+    file.route.groups.insert(
+        0,
+        EventGroup {
+            id,
+            act: 1,
+            name: "The Twilight Strand".into(),
+            start: vec![TriggerKind::ZoneEnter {
+                area_id: "1_1_1".into(),
+            }],
+            event_ids: vec![event_id],
+        },
+    );
+}
+
+fn beach_event(file: &mut CharacterFile) -> String {
+    if let Some(event) = file.route.events.iter_mut().find(|event| {
+        event.act == 1
+            && crate::plain_text(&event.text)
+                .to_ascii_lowercase()
+                .contains("hillock")
+    }) {
+        event.zone_name = Some("The Twilight Strand".into());
+        event.start = vec![TriggerKind::ZoneEnter {
+            area_id: "1_1_1".into(),
+        }];
+        if event.end.is_empty() {
+            event.end = vec![TriggerKind::ZoneEnter {
+                area_id: "1_1_town".into(),
+            }];
+        }
+        return event.id.clone();
+    }
+    let id = "a1-beach".to_string();
+    file.route.events.insert(
+        0,
+        CampaignEvent {
+            id: id.clone(),
+            act: 1,
+            text: "Find and kill Hillock".into(),
+            detail: String::new(),
+            icon: "quest".into(),
+            kind: EventKind::Step,
+            start: vec![TriggerKind::ZoneEnter {
+                area_id: "1_1_1".into(),
+            }],
+            end: vec![TriggerKind::ZoneEnter {
+                area_id: "1_1_town".into(),
+            }],
+            gem_id: None,
+            gem_name: None,
+            npc: None,
+            zone_name: Some("The Twilight Strand".into()),
+            cost_icon: String::new(),
+        },
+    );
+    id
 }
 
 pub fn force_complete(progress: &mut CharacterProgress, event_id: &str) {
@@ -594,6 +703,7 @@ mod tests {
             gem_name: None,
             npc: None,
             zone_name: Some(area.into()),
+            cost_icon: String::new(),
         }
     }
 
@@ -808,6 +918,64 @@ mod tests {
         assert!(lines.iter().any(|line| line.event_id == "hillock"));
     }
 
+    #[test]
+    fn restart_from_the_act_six_strand_opens_act_one() {
+        let mut route = CharacterRoute::default();
+        let mut hillock = step("hillock", "1_1_town", "1_1_2");
+        hillock.text = "Find and kill Hillock".into();
+        hillock.act = 1;
+        hillock.start = vec![TriggerKind::ZoneName {
+            name: "Find and kill Hillock".into(),
+        }];
+        hillock.zone_name = Some("Find and kill Hillock".into());
+        let mut town = step("town", "1_1_town", "1_1_2");
+        town.text = "Enter Lioneye's Watch".into();
+        let mut fallen = step("fallen", "2_6_1", "2_6_2");
+        fallen.act = 6;
+        fallen.text = "Hand in Fallen from Grace".into();
+        route.events.extend([hillock, town, fallen]);
+        route.groups.push(group("g-town", "1_1_town", &["town"]));
+        let mut strand = group("g6-strand", "2_6_1", &["fallen"]);
+        strand.act = 6;
+        strand.name = "The Twilight Strand".into();
+        route.groups.push(strand);
+        let mut file = character(route);
+        file.user_edited = true;
+        file.progress.area_id = "2_6_1".into();
+        file.progress.zone_name = "The Twilight Strand".into();
+        file.progress.highest_act = 6;
+        file.progress.level = 48;
+        file.progress.entered_areas.insert("2_6_1".into());
+        file.progress
+            .entered_names
+            .insert("The Twilight Strand".into());
+        file.progress.anchor_group = Some("g6-strand".into());
+        file.progress.skipped_groups.push("g-town".into());
+        file.progress.completed.insert("old".into());
+        restart_at_beach(&mut file);
+        assert_eq!(file.progress.area_id, "1_1_1");
+        assert_eq!(file.progress.zone_name, "The Twilight Strand");
+        assert_eq!(file.progress.highest_act, 1);
+        assert_eq!(file.progress.level, 1);
+        assert!(file.progress.completed.is_empty());
+        assert!(file.progress.skipped_groups.is_empty());
+        assert!(!file.progress.entered_areas.contains("2_6_1"));
+        let anchor = file.progress.anchor_group.as_deref().unwrap();
+        let group = file
+            .route
+            .groups
+            .iter()
+            .find(|group| group.id == anchor)
+            .unwrap();
+        assert_eq!(group.act, 1);
+        assert_eq!(group.name, "The Twilight Strand");
+        assert_eq!(file.route.groups[0].id, anchor);
+        let lines = visible_lines(&file.route, &file.progress, true, true, false);
+        assert!(lines.iter().any(|line| line.event_id == "hillock"));
+        assert!(!lines.iter().any(|line| line.event_id == "fallen"));
+        assert!(!lines.iter().any(|line| line.text.contains("Fallen from Grace")));
+    }
+
     fn enter(name: &str, area: &str) -> ParsedLog {
         ParsedLog::Entered {
             name: name.into(),
@@ -912,6 +1080,19 @@ mod tests {
             Some(2),
         );
         assert_eq!(file.progress.area_id, "1_2_9");
+    }
+
+    #[test]
+    fn an_unknown_area_id_is_not_replaced_by_a_later_zone_of_the_same_name() {
+        let mut route = CharacterRoute::default();
+        route.events.push(step("fallen", "2_6_1", "2_6_2"));
+        let mut strand = group("g6", "2_6_1", &["fallen"]);
+        strand.name = "The Twilight Strand".into();
+        route.groups.push(strand);
+        let mut file = character(route);
+        note_current_zone(&mut file, "The Twilight Strand", Some("1_1_1"), Some(1));
+        assert_eq!(file.progress.area_id, "1_1_1");
+        assert!(file.progress.anchor_group.is_none());
     }
 
     fn character(route: CharacterRoute) -> CharacterFile {

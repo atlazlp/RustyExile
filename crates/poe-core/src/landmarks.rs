@@ -91,6 +91,7 @@ pub fn visible_landmarks(landmarks: &[Landmark], progress: &CharacterProgress) -
             act: landmark.act,
             kind: EventKind::Step,
             is_header: false,
+            cost_icon: String::new(),
         })
         .collect()
 }

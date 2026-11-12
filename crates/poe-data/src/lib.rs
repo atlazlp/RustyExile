@@ -243,6 +243,34 @@ mod tests {
     use poe_core::build_route;
 
     #[test]
+    fn vendor_buys_use_the_currency_that_gem_costs() {
+        let catalog = load_catalog();
+        let route = build_route(&catalog, "Witch", None, true);
+        let mut wisdom = false;
+        let mut other = false;
+        let mut buys = 0;
+        for event in route.events.iter().filter(|event| event.kind == poe_core::EventKind::GemBuy) {
+            buys += 1;
+            let gem = catalog
+                .gem(event.gem_id.as_deref().expect("vendor gem has an id"))
+                .unwrap_or_else(|| panic!("missing {}", event.gem_id.as_deref().unwrap_or("")));
+            let cost = poe_core::vendor_cost_icon(gem.required_level);
+            assert_eq!(event.cost_icon, cost, "{}", gem.name);
+            if cost == "wisdom" {
+                wisdom = true;
+            } else {
+                other = true;
+            }
+        }
+        assert!(buys > 0);
+        assert!(wisdom, "a low-level vendor gem should cost a Scroll of Wisdom");
+        assert!(other, "a higher-level vendor gem should cost another currency");
+        assert!(route.events.iter().any(|event| {
+            event.kind == poe_core::EventKind::GemPick && event.cost_icon.is_empty()
+        }));
+    }
+
+    #[test]
     fn act_one_route_contains_the_coast() {
         let catalog = load_catalog();
         assert!(catalog.areas.len() > 100);
@@ -450,6 +478,69 @@ mod tests {
         assert!(shown.contains("The Twilight Strand"), "{shown}");
         assert!(shown.contains("Hillock"), "{shown}");
         assert!(!shown.contains("The Mud Flats"), "{shown}");
+    }
+
+    #[test]
+    fn relevel_from_act_six_strand_returns_to_act_one() {
+        let catalog = load_catalog();
+        let route = build_route(&catalog, "Scion", None, true);
+        let mut file = poe_core::CharacterFile {
+            name: "Scion".into(),
+            class_name: "Scion".into(),
+            route,
+            progress: Default::default(),
+            user_edited: true,
+        };
+        let beach_ids: Vec<String> = file
+            .route
+            .groups
+            .iter()
+            .filter(|group| {
+                group.start.iter().any(|trigger| {
+                    matches!(
+                        trigger,
+                        poe_core::TriggerKind::ZoneEnter { area_id } if area_id == "1_1_1"
+                    )
+                })
+            })
+            .map(|group| group.id.clone())
+            .collect();
+        assert!(!beach_ids.is_empty());
+        let mut orphan = Vec::new();
+        file.route.groups.retain(|group| {
+            if beach_ids.iter().any(|id| id == &group.id) {
+                orphan.extend(group.event_ids.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for event in &mut file.route.events {
+            if orphan.iter().any(|id| id == &event.id) {
+                event.start = vec![poe_core::TriggerKind::ZoneName {
+                    name: "Find and kill Hillock".into(),
+                }];
+            }
+        }
+        poe_core::note_current_zone(&mut file, "The Twilight Strand", Some("2_6_1"), Some(6));
+        assert_eq!(file.progress.area_id, "2_6_1");
+        poe_core::restart_at_beach(&mut file);
+        assert_eq!(file.progress.area_id, "1_1_1");
+        assert_eq!(file.progress.highest_act, 1);
+        assert!(!file.progress.entered_areas.contains("2_6_1"));
+        assert!(file.progress.skipped_groups.is_empty());
+        let anchor = file.progress.anchor_group.as_deref().unwrap();
+        let group = file
+            .route
+            .groups
+            .iter()
+            .find(|group| group.id == anchor)
+            .unwrap();
+        assert_eq!(group.act, 1);
+        assert_eq!(group.name, "The Twilight Strand");
+        let shown = shown_text(&file);
+        assert!(shown.contains("Hillock"), "{shown}");
+        assert!(!shown.contains("Fallen from Grace"), "{shown}");
     }
 
     #[test]

@@ -321,6 +321,14 @@ impl EventKind {
     pub fn is_gem(self) -> bool {
         matches!(self, Self::GemPick | Self::GemBuy)
     }
+
+    pub fn shown_cost(self, cost_icon: &str) -> &str {
+        match self {
+            Self::GemBuy if cost_icon.is_empty() => "wisdom",
+            Self::GemBuy => cost_icon,
+            _ => "",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +345,8 @@ pub struct CampaignEvent {
     pub gem_name: Option<String>,
     pub npc: Option<String>,
     pub zone_name: Option<String>,
+    #[serde(default)]
+    pub cost_icon: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -414,6 +424,7 @@ pub struct VisibleLine {
     pub act: u8,
     pub kind: EventKind,
     pub is_header: bool,
+    pub cost_icon: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

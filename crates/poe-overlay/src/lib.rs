@@ -1,4 +1,5 @@
 mod draw;
+mod gemfind;
 
 #[cfg(target_os = "linux")]
 mod hypr;
@@ -41,6 +42,16 @@ fn run(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
 }
 
 pub use draw::Painter;
+
+#[cfg(target_os = "linux")]
+pub fn cursor_pos() -> Option<(i32, i32)> {
+    hypr::cursor()
+}
+
+#[cfg(not(target_os = "linux"))]
+pub fn cursor_pos() -> Option<(i32, i32)> {
+    None
+}
 
 #[cfg(target_os = "linux")]
 pub fn paste_into_game() -> anyhow::Result<()> {
