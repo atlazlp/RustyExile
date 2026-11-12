@@ -9,7 +9,7 @@ const CREST_SCALES: [f32; 7] = [1.0, 1.4, 1.75, 2.05, 2.5, 3.1, 3.8];
 const BANNER_SCALES: [f32; 7] = [0.67, 0.8, 1.0, 1.15, 1.35, 1.6, 2.0];
 const GEM_LIMIT: f32 = 34.0;
 const CREST_LIMIT: f32 = 46.0;
-const BANNER_LIMIT: f32 = 20.0;
+const BANNER_LIMIT: f32 = 40.0;
 
 pub struct Needle {
     pub event_id: String,
@@ -626,53 +626,103 @@ fn best_match(
     if region.w < 16 || region.h < 16 {
         return None;
     }
+    let found = std::thread::scope(|scope| {
+        let mut guards = Vec::with_capacity(scales.len());
+        for &scale in scales {
+            guards.push(scope.spawn(move || {
+                score_scale(image, rgba, region, scale, limit)
+            }));
+        }
+        guards
+            .into_iter()
+            .map(|guard| guard.join().ok().flatten())
+            .collect::<Vec<_>>()
+    });
     let mut best: Option<Hit> = None;
-    for &scale in scales {
-        let side = (rgba.width() as f32 * scale).round() as u32;
-        let height = (rgba.height() as f32 * scale).round().max(1.0) as u32;
-        if side < 14 || height < 10 || side > region.w || height > region.h {
-            continue;
-        }
-        let scaled = image::imageops::resize(rgba, side, height, FilterType::Triangle);
-        let samples = samples_of(&scaled);
-        if samples.len() < 12 {
-            continue;
-        }
-        let step = if height * 2 < side {
-            2
-        } else {
-            (side.min(height) / 12).max(2)
-        };
-        let mut coarse: Option<Hit> = None;
-        let mut y = region.y;
-        while y + height <= region.y + region.h {
-            let mut x = region.x;
-            while x + side <= region.x + region.w {
-                let score = sad(image, x, y, &samples, limit);
-                if coarse.as_ref().is_none_or(|hit| score < hit.score) {
-                    coarse = Some(Hit {
-                        x,
-                        y,
-                        side,
-                        score,
-                    });
-                }
-                x += step;
-            }
-            y += step;
-        }
-        let Some(hit) = coarse else {
-            continue;
-        };
-        let refined = refine(image, rgba, region, hit, step as i32, limit);
-        if best.as_ref().is_none_or(|current| refined.score < current.score) {
-            best = Some(refined);
+    for hit in found.into_iter().flatten() {
+        if best.as_ref().is_none_or(|current| hit.score < current.score) {
+            best = Some(hit);
         }
     }
     best.filter(|hit| hit.score <= limit)
 }
 
-fn refine(image: &RgbImage, rgba: &RgbaImage, region: Rect, hit: Hit, radius: i32, limit: f32) -> Hit {
+fn score_scale(
+    image: &RgbImage,
+    rgba: &RgbaImage,
+    region: Rect,
+    scale: f32,
+    limit: f32,
+) -> Option<Hit> {
+    let side = (rgba.width() as f32 * scale).round() as u32;
+    let height = (rgba.height() as f32 * scale).round().max(1.0) as u32;
+    if side < 14 || height < 10 || side > region.w || height > region.h {
+        return None;
+    }
+    let scaled = image::imageops::resize(rgba, side, height, FilterType::Triangle);
+    let samples = samples_of(&scaled);
+    if samples.len() < 12 {
+        return None;
+    }
+    let step = if height * 2 < side {
+        2
+    } else {
+        (side.min(height) / 12).max(2)
+    };
+    let hit = scan(image, &samples, region, side, height, step, limit)?;
+    Some(refine(
+        image,
+        rgba,
+        region,
+        hit,
+        step as i32,
+        step as i32,
+        limit,
+    ))
+}
+
+fn scan(
+    image: &RgbImage,
+    samples: &[(u32, u32, u8, u8, u8)],
+    region: Rect,
+    side: u32,
+    height: u32,
+    step: u32,
+    limit: f32,
+) -> Option<Hit> {
+    if side < 8 || height < 6 || side > region.w || height > region.h {
+        return None;
+    }
+    let mut coarse: Option<Hit> = None;
+    let mut y = region.y;
+    while y + height <= region.y + region.h {
+        let mut x = region.x;
+        while x + side <= region.x + region.w {
+            let score = sad(image, x, y, samples, limit);
+            if coarse.as_ref().is_none_or(|hit| score < hit.score) {
+                coarse = Some(Hit {
+                    x,
+                    y,
+                    side,
+                    score,
+                });
+            }
+            x += step;
+        }
+        y += step;
+    }
+    coarse
+}
+
+fn refine(
+    image: &RgbImage,
+    rgba: &RgbaImage,
+    region: Rect,
+    hit: Hit,
+    radius_x: i32,
+    radius_y: i32,
+    limit: f32,
+) -> Hit {
     let scaled = image::imageops::resize(rgba, hit.side, (rgba.height() as f32 * hit.side as f32 / rgba.width().max(1) as f32).round().max(1.0) as u32, FilterType::Triangle);
     let samples = samples_of(&scaled);
     let height = scaled.height();
@@ -680,8 +730,8 @@ fn refine(image: &RgbImage, rgba: &RgbaImage, region: Rect, hit: Hit, radius: i3
     if samples.len() < 12 {
         return best;
     }
-    for dy in -radius..=radius {
-        for dx in -radius..=radius {
+    for dy in -radius_y..=radius_y {
+        for dx in -radius_x..=radius_x {
             let x = best_origin(hit.x as i32 + dx, region.x, region.w, hit.side);
             let y = best_origin(hit.y as i32 + dy, region.y, region.h, height);
             let Some((x, y)) = x.zip(y) else {

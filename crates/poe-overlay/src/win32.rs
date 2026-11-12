@@ -14,8 +14,9 @@ use windows::Win32::Foundation::{
     LRESULT, POINT, RECT, SIZE, WAIT_OBJECT_0, WPARAM,
 };
 use windows::Win32::Graphics::Gdi::{
-    BitBlt, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC, ReleaseDC,
-    SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, DIB_RGB_COLORS, HGDIOBJ, SRCCOPY,
+    BitBlt, ClientToScreen, CreateCompatibleDC, CreateDIBSection, DeleteDC, DeleteObject, GetDC,
+    GetMonitorInfoW, MonitorFromWindow, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, DIB_RGB_COLORS, HGDIOBJ, MONITORINFO, MONITOR_DEFAULTTONEAREST, SRCCOPY,
 };
 use windows::Win32::Graphics::Gdi::{AC_SRC_ALPHA, AC_SRC_OVER, BLENDFUNCTION};
 use windows::Win32::System::Threading::{
@@ -35,8 +36,9 @@ use windows::Win32::UI::WindowsAndMessaging::GetWindowTextW;
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, AppendMenuW, BringWindowToTop, CreateIcon, CreatePopupMenu,
     CreateWindowExW, DefWindowProcW, DestroyIcon, DestroyMenu, DispatchMessageW, EnumWindows,
-    GetClassNameW, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
-    GetWindowThreadProcessId, IsIconic, IsWindowVisible, PeekMessageW, RegisterClassW,
+    GetClassNameW, GetClientRect, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW,
+    GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindowVisible, PeekMessageW,
+    RegisterClassW,
     SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow, TrackPopupMenu,
     TranslateMessage, UpdateLayeredWindow, ASFW_ANY, CW_USEDEFAULT, GWLP_HWNDPARENT, GWL_EXSTYLE,
     HICON, HWND_NOTOPMOST, HWND_TOPMOST, MF_STRING, MSG, PM_REMOVE, SWP_HIDEWINDOW, SWP_NOACTIVATE,
@@ -203,12 +205,9 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(50));
             continue;
         }
-        let mut rect = RECT::default();
-        if GetWindowRect(game, std::ptr::addr_of_mut!(rect)).is_err() {
+        let Some(view) = game_frame(game) else {
             continue;
-        }
-        let width = (rect.right - rect.left).max(1) as u32;
-        let height = (rect.bottom - rect.top).max(1) as u32;
+        };
         let mut cursor = POINT::default();
         let _ = GetCursorPos(std::ptr::addr_of_mut!(cursor));
         if let Ok(click) = CLICK.lock() {
@@ -224,8 +223,8 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
                 }
             }
         }
-        let near = (cursor.x - (rect.left + width as i32 / 2)).abs() < 90
-            && (cursor.y - rect.top).abs() < 48;
+        let near = (cursor.x - (view.x + view.w as i32 / 2)).abs() < 90
+            && (cursor.y - view.y).abs() < 48;
         let ctrl = GetAsyncKeyState(VK_CONTROL.0 as i32) < 0;
         let alt = GetAsyncKeyState(VK_MENU.0 as i32) < 0;
         let Ok(shared) = state.lock() else { continue };
@@ -272,14 +271,14 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
             .join("|");
         let sig = format!(
             "{}:{}:{}:{}:{near}:{ctrl}:{alt}:{opacity}:{scale}:{:?}:{line_sig}:{placing}:{show_config_button}:{custom:?}",
-            rect.left, rect.top, width, height, corner
+            view.x, view.y, view.w, view.h, corner
         );
         drop(shared);
         let panel_hidden = !IsWindowVisible(panel).as_bool();
         if sig != last || panel_hidden {
             let frame = painter.paint(
-                width,
-                height,
+                view.w,
+                view.h,
                 &lines,
                 &theme,
                 opacity,
@@ -289,12 +288,12 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
                 custom,
                 placing,
             );
-            if place_panel(panel, &frame, rect.left, rect.top, ctrl && alt || placing) {
+            if place_panel(panel, &frame, view.x, view.y, ctrl && alt || placing) {
                 place_button(
                     button,
                     &frame,
-                    rect.left,
-                    rect.top,
+                    view.x,
+                    view.y,
                     near && show_config_button && !placing,
                 );
                 last = sig;
@@ -306,10 +305,10 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
             &state,
             &gem_watch,
             &mut last_gem_submit,
-            rect.left,
-            rect.top,
-            width,
-            height,
+            view.client_x,
+            view.client_y,
+            view.client_w,
+            view.client_h,
             &lines,
             town,
         );
@@ -375,6 +374,95 @@ fn sync_gem_window(
                 reveal(hwnd);
             }
         }
+    }
+}
+
+struct GameFrame {
+    x: i32,
+    y: i32,
+    w: u32,
+    h: u32,
+    client_x: i32,
+    client_y: i32,
+    client_w: u32,
+    client_h: u32,
+}
+
+unsafe fn game_frame(hwnd: HWND) -> Option<GameFrame> {
+    let mut client = RECT::default();
+    GetClientRect(hwnd, &mut client).ok()?;
+    let mut origin = POINT { x: 0, y: 0 };
+    if !ClientToScreen(hwnd, &mut origin).as_bool() {
+        return None;
+    }
+    let client_w = (client.right - client.left).max(1) as u32;
+    let client_h = (client.bottom - client.top).max(1) as u32;
+    let (monitor_x, monitor_y, monitor_w, monitor_h) =
+        monitor_bounds(hwnd).unwrap_or((origin.x, origin.y, client_w as i32, client_h as i32));
+    let (x, y, w, h) = screen_space(
+        origin.x,
+        origin.y,
+        client_w,
+        client_h,
+        monitor_x,
+        monitor_y,
+        monitor_w,
+        monitor_h,
+    );
+    Some(GameFrame {
+        x,
+        y,
+        w,
+        h,
+        client_x: origin.x,
+        client_y: origin.y,
+        client_w,
+        client_h,
+    })
+}
+
+unsafe fn monitor_bounds(hwnd: HWND) -> Option<(i32, i32, i32, i32)> {
+    let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+    if monitor.0.is_null() {
+        return None;
+    }
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+        return None;
+    }
+    let rect = info.rcMonitor;
+    let width = rect.right - rect.left;
+    let height = rect.bottom - rect.top;
+    if width <= 0 || height <= 0 {
+        return None;
+    }
+    Some((rect.left, rect.top, width, height))
+}
+
+fn screen_space(
+    window_x: i32,
+    window_y: i32,
+    window_w: u32,
+    window_h: u32,
+    monitor_x: i32,
+    monitor_y: i32,
+    monitor_w: i32,
+    monitor_h: i32,
+) -> (i32, i32, u32, u32) {
+    let near = |a: i32, b: i32| (a - b).abs() <= 80;
+    if monitor_w > 0
+        && monitor_h > 0
+        && near(window_w as i32, monitor_w)
+        && near(window_h as i32, monitor_h)
+        && near(window_x, monitor_x)
+        && near(window_y, monitor_y)
+    {
+        (monitor_x, monitor_y, monitor_w as u32, monitor_h as u32)
+    } else {
+        (window_x, window_y, window_w.max(1), window_h.max(1))
     }
 }
 
@@ -894,19 +982,19 @@ unsafe fn present_config(ticket: u64, placed: &mut bool) {
 }
 
 unsafe fn move_over_game(config: HWND, game: HWND) -> bool {
-    let mut game_rect = RECT::default();
     let mut config_rect = RECT::default();
-    if GetWindowRect(game, std::ptr::addr_of_mut!(game_rect)).is_err()
-        || GetWindowRect(config, std::ptr::addr_of_mut!(config_rect)).is_err()
-    {
+    let Some(view) = game_frame(game) else {
+        return false;
+    };
+    if GetWindowRect(config, std::ptr::addr_of_mut!(config_rect)).is_err() {
         return false;
     }
-    let game_w = game_rect.right - game_rect.left;
-    let game_h = game_rect.bottom - game_rect.top;
+    let game_w = view.w as i32;
+    let game_h = view.h as i32;
     let window_w = config_rect.right - config_rect.left;
     let window_h = config_rect.bottom - config_rect.top;
-    if game_rect.left < -10_000
-        || game_rect.top < -10_000
+    if view.x < -10_000
+        || view.y < -10_000
         || game_w < 200
         || game_h < 200
         || window_w < 400
@@ -915,14 +1003,14 @@ unsafe fn move_over_game(config: HWND, game: HWND) -> bool {
         return false;
     }
     let x = if window_w >= game_w {
-        game_rect.left
+        view.x
     } else {
-        game_rect.left + (game_w - window_w) / 2
+        view.x + (game_w - window_w) / 2
     };
     let y = if window_h >= game_h {
-        game_rect.top
+        view.y
     } else {
-        game_rect.top + (game_h - window_h) / 2
+        view.y + (game_h - window_h) / 2
     };
     SetWindowPos(
         config,
@@ -1341,15 +1429,29 @@ mod instance_tests {
 fn panel_offset(panel: isize) -> (i32, i32) {
     unsafe {
         let mut panel_rect = RECT::default();
-        let mut game_rect = RECT::default();
         let hwnd = HWND(panel as *mut std::ffi::c_void);
         let _ = GetWindowRect(hwnd, std::ptr::addr_of_mut!(panel_rect));
-        if let Some(game) = find_poe_window() {
-            let _ = GetWindowRect(game, std::ptr::addr_of_mut!(game_rect));
-        }
-        (
-            panel_rect.left - game_rect.left,
-            panel_rect.top - game_rect.top,
-        )
+        let (origin_x, origin_y) = find_poe_window()
+            .and_then(|game| game_frame(game))
+            .map(|view| (view.x, view.y))
+            .unwrap_or((0, 0));
+        (panel_rect.left - origin_x, panel_rect.top - origin_y)
+    }
+}
+
+#[cfg(test)]
+mod space_tests {
+    use super::screen_space;
+
+    #[test]
+    fn a_near_fullscreen_window_uses_the_screen() {
+        let (x, y, w, h) = screen_space(-8, -8, 1936, 1096, 0, 0, 1920, 1080);
+        assert_eq!((x, y, w, h), (0, 0, 1920, 1080));
+    }
+
+    #[test]
+    fn a_windowed_game_keeps_its_own_rect() {
+        let (x, y, w, h) = screen_space(100, 80, 1280, 720, 0, 0, 1920, 1080);
+        assert_eq!((x, y, w, h), (100, 80, 1280, 720));
     }
 }
