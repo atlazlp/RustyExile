@@ -1,4 +1,4 @@
-use image::{imageops::FilterType, RgbaImage, RgbImage};
+use image::{imageops::FilterType, Rgb, RgbaImage, RgbImage};
 use poe_core::{GemSpot, VisibleLine};
 use std::sync::mpsc::{self, Receiver, SyncSender, TrySendError};
 use std::sync::OnceLock;
@@ -7,10 +7,11 @@ use std::time::{Duration, Instant};
 const GEM_SCALES: [f32; 8] = [0.5, 0.65, 0.8, 0.95, 1.1, 1.3, 1.55, 1.85];
 const CREST_SCALES: [f32; 7] = [1.0, 1.4, 1.75, 2.05, 2.5, 3.1, 3.8];
 const BANNER_SCALES: [f32; 7] = [0.67, 0.8, 1.0, 1.15, 1.35, 1.6, 2.0];
-// A quest reward icon scored 36 with its socket frame and alert badge.
-const GEM_LIMIT: f32 = 40.0;
-const CREST_LIMIT: f32 = 46.0;
-const BANNER_LIMIT: f32 = 40.0;
+// 1 - correlation. A gem that actually lines up scores about 0.10.
+// One pixel off, or a lookalike, stays above this.
+const GEM_LIMIT: f32 = 0.20;
+const CREST_LIMIT: f32 = 0.20;
+const BANNER_LIMIT: f32 = 0.20;
 
 pub struct Needle {
     pub event_id: String,
@@ -196,32 +197,31 @@ pub fn locate(
     origin_y: i32,
     needles: &[Needle],
 ) -> Vec<GemMark> {
+    let half = box_half_rgb(image);
     let mut found = Vec::new();
-    if let Some(plaque) = find_templates(image, window_h, banners()) {
+    if let Some(plaque) = find_templates(image, &half, window_h, reward_plaques()) {
         push_matches(
             &mut found,
             image,
+            &half,
+            needles,
+            below_plaque(image, plaque),
+            false,
+            origin_x,
+            origin_y,
+        );
+    }
+    if let Some(plaque) = find_templates(image, &half, window_h, vendor_plaques()) {
+        push_matches(
+            &mut found,
+            image,
+            &half,
             needles,
             below_plaque(image, plaque),
             true,
             origin_x,
             origin_y,
         );
-    } else {
-        if let Some(region) = band(image, window_h, 20, 80) {
-            push_matches(&mut found, image, needles, region, false, origin_x, origin_y);
-        }
-        if let Some(plaque) = find_templates(image, window_h, purchase_crests()) {
-            push_matches(
-                &mut found,
-                image,
-                needles,
-                below_plaque(image, plaque),
-                true,
-                origin_x,
-                origin_y,
-            );
-        }
     }
     found.sort_by(|a, b| a.score.total_cmp(&b.score));
     let mut kept = Vec::new();
@@ -468,6 +468,7 @@ fn hold(
 fn push_matches(
     found: &mut Vec<GemMark>,
     image: &RgbImage,
+    half: &RgbImage,
     needles: &[Needle],
     region: Rect,
     vendor: bool,
@@ -475,7 +476,7 @@ fn push_matches(
     origin_y: i32,
 ) {
     for needle in needles.iter().filter(|needle| needle.vendor == vendor) {
-        if let Some(hit) = best_match(image, &needle.rgba, region, &GEM_SCALES, GEM_LIMIT) {
+        if let Some(hit) = best_match(image, half, &needle.rgba, region, &GEM_SCALES, GEM_LIMIT) {
             found.push(mark(needle, hit, origin_x, origin_y));
         }
     }
@@ -507,6 +508,7 @@ fn band(image: &RgbImage, window_h: u32, top_pct: u32, bottom_pct: u32) -> Optio
     })
 }
 
+#[derive(Clone)]
 struct Template {
     image: RgbaImage,
     scales: &'static [f32],
@@ -548,12 +550,47 @@ fn purchase_crests() -> &'static [Template] {
     })
 }
 
-fn find_templates(image: &RgbImage, window_h: u32, templates: &[Template]) -> Option<Rect> {
+fn reward_plaques() -> &'static [Template] {
+    static REWARD: OnceLock<Vec<Template>> = OnceLock::new();
+    REWARD.get_or_init(|| {
+        load_template(
+            include_bytes!("../../../assets/icons/ui/plaque-reward.png"),
+            &BANNER_SCALES,
+            BANNER_LIMIT,
+        )
+        .into_iter()
+        .collect()
+    })
+}
+
+fn vendor_plaques() -> &'static [Template] {
+    static ALL: OnceLock<Vec<Template>> = OnceLock::new();
+    ALL.get_or_init(|| {
+        banners()
+            .iter()
+            .cloned()
+            .chain(purchase_crests().iter().cloned())
+            .collect()
+    })
+}
+
+fn find_templates(
+    image: &RgbImage,
+    half: &RgbImage,
+    window_h: u32,
+    templates: &[Template],
+) -> Option<Rect> {
     let region = band(image, window_h.max(image.height()), 0, 72)?;
     let mut best: Option<(Hit, f32)> = None;
     for template in templates {
-        let Some(hit) = best_match(image, &template.image, region, template.scales, template.limit)
-        else {
+        let Some(hit) = best_match(
+            image,
+            half,
+            &template.image,
+            region,
+            template.scales,
+            template.limit,
+        ) else {
             continue;
         };
         if best.as_ref().is_none_or(|(current, _)| hit.score < current.score) {
@@ -570,15 +607,26 @@ fn find_templates(image: &RgbImage, window_h: u32, templates: &[Template]) -> Op
 }
 
 fn below_plaque(image: &RgbImage, plaque: Rect) -> Rect {
-    let x = plaque.x.saturating_sub(plaque.w / 2);
-    let w = plaque.w.saturating_mul(3).min(image.width().saturating_sub(x));
+    let w = plaque.w.saturating_mul(2).min(image.width());
+    let center = plaque.x.saturating_add(plaque.w / 2);
+    let x = center.saturating_sub(w / 2);
+    let x = x.min(image.width().saturating_sub(w));
     let y = (plaque.y + plaque.h).min(image.height());
-    let h = image.height().saturating_sub(y);
-    Rect { x, y, w, h }
+    let h = plaque
+        .w
+        .saturating_mul(3)
+        .min(image.height().saturating_sub(y));
+    Rect {
+        x,
+        y,
+        w: w.min(image.width().saturating_sub(x)),
+        h,
+    }
 }
 
 fn best_match(
     image: &RgbImage,
+    half: &RgbImage,
     rgba: &RgbaImage,
     region: Rect,
     scales: &[f32],
@@ -591,7 +639,7 @@ fn best_match(
         let mut guards = Vec::with_capacity(scales.len());
         for &scale in scales {
             guards.push(scope.spawn(move || {
-                score_scale(image, rgba, region, scale, limit)
+                score_scale(image, half, rgba, region, scale, limit)
             }));
         }
         guards
@@ -610,6 +658,7 @@ fn best_match(
 
 fn score_scale(
     image: &RgbImage,
+    half: &RgbImage,
     rgba: &RgbaImage,
     region: Rect,
     scale: f32,
@@ -621,25 +670,35 @@ fn score_scale(
         return None;
     }
     let scaled = image::imageops::resize(rgba, side, height, FilterType::Triangle);
-    let samples = samples_of(&scaled);
+    let small = box_half_rgba(&scaled);
+    if small.width() < 6 || small.height() < 4 {
+        return None;
+    }
+    let samples = samples_of(&small, 48);
     if samples.len() < 12 {
         return None;
     }
-    let step = if height * 2 < side {
-        2
-    } else {
-        (side.min(height) / 12).max(2)
+    // The full-size peak is one pixel wide, so a stepped scan walks past it.
+    // Every pixel of the half-size image lands on that peak.
+    let half_region = Rect {
+        x: region.x / 2,
+        y: region.y / 2,
+        w: (region.w / 2).max(1),
+        h: (region.h / 2).max(1),
     };
-    let hit = scan(image, &samples, region, side, height, step, limit)?;
-    Some(refine(
-        image,
-        rgba,
-        region,
-        hit,
-        step as i32,
-        step as i32,
-        limit,
-    ))
+    let coarse = scan(
+        half,
+        &samples,
+        half_region,
+        small.width(),
+        small.height(),
+        1,
+        55.0,
+    )?;
+    if coarse.score > 40.0 {
+        return None;
+    }
+    confirm(image, rgba, region, coarse.x * 2, coarse.y * 2, side, limit)
 }
 
 fn scan(
@@ -675,34 +734,41 @@ fn scan(
     coarse
 }
 
-fn refine(
+fn confirm(
     image: &RgbImage,
     rgba: &RgbaImage,
     region: Rect,
-    hit: Hit,
-    radius_x: i32,
-    radius_y: i32,
+    origin_x: u32,
+    origin_y: u32,
+    side: u32,
     limit: f32,
-) -> Hit {
-    let scaled = image::imageops::resize(rgba, hit.side, (rgba.height() as f32 * hit.side as f32 / rgba.width().max(1) as f32).round().max(1.0) as u32, FilterType::Triangle);
-    let samples = samples_of(&scaled);
-    let height = scaled.height();
-    let mut best = hit;
-    if samples.len() < 12 {
-        return best;
-    }
-    for dy in -radius_y..=radius_y {
-        for dx in -radius_x..=radius_x {
-            let x = best_origin(hit.x as i32 + dx, region.x, region.w, hit.side);
-            let y = best_origin(hit.y as i32 + dy, region.y, region.h, height);
-            let Some((x, y)) = x.zip(y) else {
-                continue;
-            };
-            let score = sad(image, x, y, &samples, limit);
-            if score <= limit && score < best.score {
-                best.x = x;
-                best.y = y;
-                best.score = score;
+) -> Option<Hit> {
+    let mut best: Option<Hit> = None;
+    for delta in [-4i32, -2, 0, 2, 4] {
+        let side = (side as i32 + delta).max(14) as u32;
+        let height = (rgba.height() as f32 * side as f32 / rgba.width().max(1) as f32)
+            .round()
+            .max(1.0) as u32;
+        if side > region.w || height > region.h {
+            continue;
+        }
+        let scaled = image::imageops::resize(rgba, side, height, FilterType::Triangle);
+        let samples = samples_of(&scaled, 96);
+        if samples.len() < 12 {
+            continue;
+        }
+        for dy in -2i32..=2 {
+            for dx in -2i32..=2 {
+                let Some(x) = best_origin(origin_x as i32 + dx, region.x, region.w, side) else {
+                    continue;
+                };
+                let Some(y) = best_origin(origin_y as i32 + dy, region.y, region.h, height) else {
+                    continue;
+                };
+                let score = zncc(image, x, y, &samples);
+                if score <= limit && best.as_ref().is_none_or(|hit| score < hit.score) {
+                    best = Some(Hit { x, y, side, score });
+                }
             }
         }
     }
@@ -720,18 +786,18 @@ fn best_origin(value: i32, origin: u32, span: u32, size: u32) -> Option<u32> {
     Some(value)
 }
 
-fn samples_of(image: &RgbaImage) -> Vec<(u32, u32, u8, u8, u8)> {
+fn samples_of(image: &RgbaImage, max: usize) -> Vec<(u32, u32, u8, u8, u8)> {
     let mut all = Vec::new();
     for (x, y, pixel) in image.enumerate_pixels() {
         if pixel[3] > 140 {
             all.push((x, y, pixel[0], pixel[1], pixel[2]));
         }
     }
-    if all.len() <= 96 {
+    if all.len() <= max || max == 0 {
         return all;
     }
-    let step = all.len() as f32 / 96.0;
-    (0..96)
+    let step = all.len() as f32 / max as f32;
+    (0..max)
         .map(|index| all[(index as f32 * step) as usize])
         .collect()
 }
@@ -764,15 +830,105 @@ fn score_at(image: &RgbImage, rgba: &RgbaImage, x: u32, y: u32, side: u32) -> f3
     let height = (rgba.height() as f32 * side as f32 / rgba.width().max(1) as f32)
         .round()
         .max(1.0) as u32;
-    if x.saturating_add(side) > image.width() || y.saturating_add(height) > image.height() {
-        return 255.0;
+    if side < 8 || x.saturating_add(side) > image.width() || y.saturating_add(height) > image.height()
+    {
+        return 1.0;
     }
     let scaled = image::imageops::resize(rgba, side, height, FilterType::Triangle);
-    let samples = samples_of(&scaled);
+    let samples = samples_of(&scaled, 96);
     if samples.len() < 12 {
-        return 255.0;
+        return 1.0;
     }
-    sad(image, x, y, &samples, GEM_LIMIT)
+    zncc(image, x, y, &samples)
+}
+
+fn zncc(image: &RgbImage, x: u32, y: u32, samples: &[(u32, u32, u8, u8, u8)]) -> f32 {
+    let mut st = 0.0f32;
+    let mut si = 0.0f32;
+    let mut stt = 0.0f32;
+    let mut sii = 0.0f32;
+    let mut sti = 0.0f32;
+    for (sx, sy, r, g, b) in samples {
+        let pixel = image.get_pixel(x + sx, y + sy);
+        for (template, sample) in [(*r, pixel[0]), (*g, pixel[1]), (*b, pixel[2])] {
+            let template = template as f32;
+            let sample = sample as f32;
+            st += template;
+            si += sample;
+            stt += template * template;
+            sii += sample * sample;
+            sti += template * sample;
+        }
+    }
+    let n = samples.len() as f32 * 3.0;
+    let vt = n * stt - st * st;
+    let vi = n * sii - si * si;
+    if vt < 1.0 || vi < 1.0 {
+        return 1.0;
+    }
+    1.0 - (n * sti - st * si) / (vt * vi).sqrt()
+}
+
+fn box_half_rgb(image: &RgbImage) -> RgbImage {
+    let w = image.width() / 2;
+    let h = image.height() / 2;
+    if w == 0 || h == 0 {
+        return RgbImage::from_pixel(1, 1, Rgb([0, 0, 0]));
+    }
+    let mut out = RgbImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = [0u16; 3];
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let pixel = image.get_pixel(x * 2 + dx, y * 2 + dy);
+                    acc[0] += pixel[0] as u16;
+                    acc[1] += pixel[1] as u16;
+                    acc[2] += pixel[2] as u16;
+                }
+            }
+            out.put_pixel(
+                x,
+                y,
+                Rgb([(acc[0] / 4) as u8, (acc[1] / 4) as u8, (acc[2] / 4) as u8]),
+            );
+        }
+    }
+    out
+}
+
+fn box_half_rgba(image: &RgbaImage) -> RgbaImage {
+    let w = image.width() / 2;
+    let h = image.height() / 2;
+    if w == 0 || h == 0 {
+        return RgbaImage::new(1, 1);
+    }
+    let mut out = RgbaImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let mut acc = [0u16; 4];
+            for dy in 0..2 {
+                for dx in 0..2 {
+                    let pixel = image.get_pixel(x * 2 + dx, y * 2 + dy);
+                    acc[0] += pixel[0] as u16;
+                    acc[1] += pixel[1] as u16;
+                    acc[2] += pixel[2] as u16;
+                    acc[3] += pixel[3] as u16;
+                }
+            }
+            out.put_pixel(
+                x,
+                y,
+                image::Rgba([
+                    (acc[0] / 4) as u8,
+                    (acc[1] / 4) as u8,
+                    (acc[2] / 4) as u8,
+                    (acc[3] / 4) as u8,
+                ]),
+            );
+        }
+    }
+    out
 }
 
 fn blit(dest: &mut [u8], dest_w: u32, dest_h: u32, x: u32, y: u32, side: u32, src: &[u8]) {
@@ -836,38 +992,69 @@ mod tests {
     fn a_pasted_gem_is_found_and_a_different_gem_is_not() {
         let fireball = icon("Fireball");
         let drawn = image::imageops::resize(&fireball, 62, 62, FilterType::Triangle);
-        let mut scene = RgbImage::from_pixel(420, 300, Rgb([16, 14, 18]));
-        paste(&mut scene, &drawn, 90, 80);
-        let hits = locate(
-            &scene,
-            420,
-            300,
-            10,
-            20,
-            &[Needle {
-                event_id: "fireball".into(),
-                rgba: fireball,
-                vendor: false,
-                cost_icon: String::new(),
-            }],
+        let plaque = reward_plaques()[0].image.clone();
+        let mut scene = RgbImage::from_pixel(640, 420, Rgb([16, 14, 18]));
+        paste(&mut scene, &drawn, 90, 180);
+        let needle = Needle {
+            event_id: "fireball".into(),
+            rgba: fireball,
+            vendor: false,
+            cost_icon: String::new(),
+        };
+        assert!(
+            locate(&scene, 640, 420, 0, 0, &[needle_clone(&needle)]).is_empty(),
+            "a reward gem needs the reward plaque"
         );
+        paste(&mut scene, &plaque, 40, 16);
+        let hits = locate(&scene, 640, 420, 10, 20, &[needle_clone(&needle)]);
         assert_eq!(hits.len(), 1, "score search missed the pasted icon");
-        assert!((hits[0].x - 100).abs() <= 8, "x {}", hits[0].x);
-        assert!((hits[0].y - 100).abs() <= 8, "y {}", hits[0].y);
+        assert!((hits[0].x - 100).abs() <= 2, "x {}", hits[0].x);
+        assert!((hits[0].y - 200).abs() <= 2, "y {}", hits[0].y);
+        let decoy = image::imageops::resize(&icon("Spark"), 62, 62, FilterType::Triangle);
+        paste(&mut scene, &decoy, 220, 180);
+        let hits = locate(&scene, 640, 420, 10, 20, &[needle_clone(&needle)]);
+        assert_eq!(hits.len(), 1);
+        assert!((hits[0].x - 100).abs() <= 2, "slid onto the neighbor at x {}", hits[0].x);
         let wrong = locate(
             &scene,
+            640,
             420,
-            300,
             0,
             0,
             &[Needle {
-                event_id: "spark".into(),
-                rgba: icon("Spark"),
+                event_id: "clarity".into(),
+                rgba: icon("Clarity"),
                 vendor: false,
                 cost_icon: String::new(),
             }],
         );
         assert!(wrong.is_empty());
+    }
+
+    #[test]
+    fn an_orange_patch_is_not_a_gem() {
+        let plaque = reward_plaques()[0].image.clone();
+        let mut scene = RgbImage::from_pixel(640, 420, Rgb([16, 14, 18]));
+        paste(&mut scene, &plaque, 40, 16);
+        for y in 180..250 {
+            for x in 90..160 {
+                scene.put_pixel(x, y, Rgb([220, 90, 30]));
+            }
+        }
+        let hits = locate(
+            &scene,
+            640,
+            420,
+            0,
+            0,
+            &[Needle {
+                event_id: "lifetap".into(),
+                rgba: icon("Lifetap Support"),
+                vendor: false,
+                cost_icon: String::new(),
+            }],
+        );
+        assert!(hits.is_empty());
     }
 
     #[test]
@@ -904,13 +1091,14 @@ mod tests {
     #[test]
     fn the_vendor_banner_highlights_the_buy_and_leaves_the_quest_gem() {
         let banner = banners()[0].image.clone();
+        let reward = reward_plaques()[0].image.clone();
         let fireball = icon("Fireball");
         let tendrils = icon("Lightning Tendrils");
         let fire = image::imageops::resize(&fireball, 51, 51, FilterType::Triangle);
         let bolt = image::imageops::resize(&tendrils, 51, 51, FilterType::Triangle);
         let mut scene = RgbImage::from_pixel(980, 420, Rgb([12, 10, 14]));
-        paste(&mut scene, &fire, 460, 140);
-        paste(&mut scene, &bolt, 340, 140);
+        paste(&mut scene, &fire, 460, 160);
+        paste(&mut scene, &bolt, 340, 160);
         let quest = Needle {
             event_id: "tendrils".into(),
             rgba: tendrils,
@@ -923,15 +1111,20 @@ mod tests {
             vendor: true,
             cost_icon: "wisdom".into(),
         };
+        assert!(locate(&scene, 980, 420, 0, 0, &[needle_clone(&quest), needle_clone(&buy)]).is_empty());
+        paste(&mut scene, &reward, 300, 20);
         let open_quest = locate(&scene, 980, 420, 0, 0, &[needle_clone(&quest), needle_clone(&buy)]);
         assert_eq!(open_quest.len(), 1);
         assert_eq!(open_quest[0].event_id, "tendrils");
-        paste(&mut scene, &banner, 200, 30);
-        let open_vendor = locate(&scene, 980, 420, 0, 0, &[quest, buy]);
+        let mut vendor = RgbImage::from_pixel(980, 420, Rgb([12, 10, 14]));
+        paste(&mut vendor, &fire, 460, 160);
+        paste(&mut vendor, &bolt, 340, 160);
+        paste(&mut vendor, &banner, 200, 30);
+        let open_vendor = locate(&vendor, 980, 420, 0, 0, &[quest, buy]);
         assert_eq!(open_vendor.len(), 1, "quest gem must stay off the vendor grid");
         assert_eq!(open_vendor[0].event_id, "fireball");
         assert_eq!(open_vendor[0].cost_icon, "wisdom");
-        assert!((open_vendor[0].x - 460).abs() <= 8, "x {}", open_vendor[0].x);
+        assert!((open_vendor[0].x - 460).abs() <= 2, "x {}", open_vendor[0].x);
 
         let spark = icon("Spark");
         let drawn = image::imageops::resize(&spark, 51, 51, FilterType::Triangle);
