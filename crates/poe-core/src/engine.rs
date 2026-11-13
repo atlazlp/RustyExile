@@ -475,6 +475,8 @@ fn line_from(event: &CampaignEvent, show_tips: bool) -> VisibleLine {
         text: event.text.clone(),
         detail: if show_tips {
             event.detail.clone()
+        } else if event.text.starts_with("Hand in ") {
+            event.detail.lines().next().unwrap_or("").to_string()
         } else {
             String::new()
         },
@@ -709,6 +711,35 @@ mod tests {
             zone_name: Some(area.into()),
             cost_icon: String::new(),
         }
+    }
+
+    #[test]
+    fn hand_in_keeps_its_npc_when_zone_tips_are_off() {
+        let mut route = CharacterRoute::default();
+        let mut hand = step("Hand in Enemy at the Gate", "1_1_town", "1_1_2");
+        hand.detail = "Tarkleigh in Lioneye's Watch\nTalk to him".into();
+        let mut find = step("Find the nests", "1_1_town", "1_1_2");
+        find.detail = "Little streams".into();
+        route.events.push(hand);
+        route.events.push(find);
+        route.groups.push(group(
+            "g-town",
+            "1_1_town",
+            &["Hand in Enemy at the Gate", "Find the nests"],
+        ));
+        let mut progress = CharacterProgress::default();
+        progress.entered_areas.insert("1_1_town".into());
+        let lines = visible_lines(&route, &progress, true, true, false);
+        let hand = lines
+            .iter()
+            .find(|line| line.event_id == "Hand in Enemy at the Gate")
+            .unwrap();
+        assert_eq!(hand.detail, "Tarkleigh in Lioneye's Watch");
+        let find = lines
+            .iter()
+            .find(|line| line.event_id == "Find the nests")
+            .unwrap();
+        assert!(find.detail.is_empty());
     }
 
     #[test]

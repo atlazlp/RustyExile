@@ -95,7 +95,7 @@ impl Painter {
             let text_h = if line.detail.is_empty() {
                 text_h
             } else {
-                text_h + (14.0 * scale) as u32
+                text_h + (6.0 * scale) as u32
             };
             rows.push(RowDraw {
                 line,
@@ -208,7 +208,7 @@ impl Painter {
                     &mut pixmap,
                     &row.line.detail,
                     (12 + icon_px as i32) as f32,
-                    y as f32 + text_block as f32 + 1.0,
+                    y as f32 + text_block as f32 - 8.0 * scale,
                     (panel_w - icon_px - 24) as f32,
                     11.0 * scale,
                     theme.muted,

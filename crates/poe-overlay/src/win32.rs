@@ -266,7 +266,7 @@ unsafe fn run_inner(state: Arc<Mutex<AppState>>) -> anyhow::Result<()> {
         };
         let line_sig = lines
             .iter()
-            .map(|line| format!("{}:{}", line.event_id, line.text))
+            .map(|line| format!("{}:{}:{}", line.event_id, line.text, line.detail))
             .collect::<Vec<_>>()
             .join("|");
         let sig = format!(

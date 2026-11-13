@@ -411,7 +411,7 @@ impl Overlay {
         let line_sig = snap
             .lines
             .iter()
-            .map(|l| l.event_id.clone())
+            .map(|l| format!("{}:{}:{}", l.event_id, l.text, l.detail))
             .collect::<Vec<_>>()
             .join("|");
         let full_sig = format!("{sig}|{}|{line_sig}", snap.capture);

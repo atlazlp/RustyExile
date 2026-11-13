@@ -358,6 +358,13 @@ mod tests {
             event.text.contains("Hand in Enemy at the Gate")
                 && event.detail.contains("Tarkleigh in Lioneye's Watch")
         }));
+        let blank: Vec<_> = route
+            .events
+            .iter()
+            .filter(|event| event.text.starts_with("Hand in ") && event.detail.is_empty())
+            .map(|event| event.text.clone())
+            .collect();
+        assert!(blank.is_empty(), "{blank:?}");
         let den = route
             .events
             .iter()
@@ -760,10 +767,16 @@ mod tests {
                 .iter()
                 .filter_map(|id| route.events.iter().find(|event| &event.id == id))
                 .collect();
-            let Some(pos) = events
+            let town = catalog
+                .areas
                 .iter()
-                .position(|event| event.text == "Logout or Portal to Town")
-            else {
+                .find(|area| area.act == group.act && area.is_town)
+                .unwrap_or_else(|| panic!("act {} has no town", group.act));
+            let Some(pos) = events.iter().position(|event| {
+                event.text == "Logout or Portal to Town"
+                    || ((event.text == "Take town portal" || event.text == "Town portal")
+                        && group.name != town.name)
+            }) else {
                 continue;
             };
             logouts += 1;
@@ -784,11 +797,6 @@ mod tests {
             if plain.starts_with("Waypoint") || plain.starts_with("Enter") {
                 continue;
             }
-            let town = catalog
-                .areas
-                .iter()
-                .find(|area| area.act == group.act && area.is_town)
-                .unwrap_or_else(|| panic!("act {} has no town", group.act));
             assert_eq!(
                 next.name, town.name,
                 "after logout in {}, '{plain}' is still in {}",

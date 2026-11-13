@@ -9,7 +9,7 @@ Place {portal|set} in the plaza
     #sub Go {dir|180}
 {waypoint|2_10_town} #Oriath Docks
 Hand in {quest|a10q1} #Safe Passage
-Take {portal|use}
+{portal|use}
 Get {waypoint_get}
     #sub Go {dir|45}
 #ifdef LEAGUE_START

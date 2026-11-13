@@ -13,6 +13,7 @@ struct RawStep {
     quest_ids: Vec<String>,
     act: u8,
     logout: bool,
+    portal_use: bool,
 }
 
 pub fn build_route(
@@ -63,7 +64,13 @@ pub fn build_route_with(
             carry = step.area_id.clone();
             back_in_town = false;
         }
-        if step.logout {
+        let in_town = step
+            .area_id
+            .as_deref()
+            .and_then(|id| catalog.area(id))
+            .is_some_and(|area| area.is_town);
+        if step.logout || (step.portal_use && !in_town) {
+            step.logout = true;
             back_in_town = true;
         }
     }
@@ -705,6 +712,7 @@ fn parse_act(
             quest_ids,
             act,
             logout: body.contains("{logout}"),
+            portal_use: body.contains("{portal|use}"),
         });
     }
     steps
@@ -712,6 +720,12 @@ fn parse_act(
 
 fn hand_in_place(catalog: &Catalog, quest_ids: &[String], act: u8) -> Option<String> {
     let (quest_id, offers) = quest_ids.split_first()?;
+    // No reward NPC: the turn-in is the device in that zone.
+    match quest_id.as_str() {
+        "a4q5" => return Some("Rapture Device in The Harvest".into()),
+        "a7q7" => return Some("Fireflies in The Vaal City".into()),
+        _ => {}
+    }
     let quest = catalog.quest(quest_id)?;
     let offered = offers.iter().find_map(|offer| {
         quest
@@ -953,6 +967,7 @@ pub fn refresh_generated_route(
     if file.user_edited {
         return;
     }
+    let kept = keep_progress(&file.route, &file.progress);
     file.route
         .pob_gems
         .retain(|name| !started_with(catalog, &file.class_name, name));
@@ -969,6 +984,149 @@ pub fn refresh_generated_route(
     fresh.pob_gems = std::mem::take(&mut file.route.pob_gems);
     fresh.tree_specs = std::mem::take(&mut file.route.tree_specs);
     file.route = fresh;
+    restore_progress(&file.route, &mut file.progress, &kept);
+}
+
+struct KeptProgress {
+    completed: Vec<String>,
+    anchor: Option<usize>,
+    tokens: Vec<String>,
+    skipped: Vec<usize>,
+    cleared: Vec<usize>,
+    visited: Vec<usize>,
+    view_delta: i32,
+}
+
+fn group_token(group: &crate::model::EventGroup) -> String {
+    let area = group
+        .start
+        .iter()
+        .find_map(|trigger| match trigger {
+            TriggerKind::ZoneEnter { area_id } => Some(area_id.as_str()),
+            _ => None,
+        })
+        .unwrap_or("");
+    format!("{}|{}|{area}", group.act, group.name)
+}
+
+fn event_stamp(event: &crate::model::CampaignEvent) -> String {
+    if let Some(gem) = &event.gem_id {
+        return format!("gem|{gem}");
+    }
+    format!(
+        "step|{}|{}|{}",
+        event.act,
+        event.zone_name.as_deref().unwrap_or(""),
+        crate::plain_text(&event.text)
+    )
+}
+
+fn keep_progress(route: &CharacterRoute, progress: &crate::model::CharacterProgress) -> KeptProgress {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut stamp_of = HashMap::new();
+    for event in &route.events {
+        let stamp = event_stamp(event);
+        let n = seen.entry(stamp.clone()).or_insert(0);
+        stamp_of.insert(event.id.clone(), format!("{stamp}#{n}"));
+        *n += 1;
+    }
+    let index_of: HashMap<&str, usize> = route
+        .groups
+        .iter()
+        .enumerate()
+        .map(|(index, group)| (group.id.as_str(), index))
+        .collect();
+    let indexes = |ids: &[String]| {
+        ids.iter()
+            .filter_map(|id| index_of.get(id.as_str()).copied())
+            .collect()
+    };
+    KeptProgress {
+        completed: progress
+            .completed
+            .iter()
+            .filter_map(|id| stamp_of.get(id).cloned())
+            .collect(),
+        anchor: progress
+            .anchor_group
+            .as_ref()
+            .and_then(|id| index_of.get(id.as_str()).copied()),
+        tokens: route.groups.iter().map(group_token).collect(),
+        skipped: indexes(&progress.skipped_groups),
+        cleared: indexes(&progress.cleared_groups),
+        visited: indexes(&progress.visited_groups),
+        view_delta: progress.view_delta,
+    }
+}
+
+fn align_groups(old: &[String], new: &[String]) -> HashMap<usize, usize> {
+    let n = old.len();
+    let m = new.len();
+    let mut dp = vec![vec![0u16; m + 1]; n + 1];
+    for i in 0..n {
+        for j in 0..m {
+            dp[i + 1][j + 1] = if old[i] == new[j] {
+                dp[i][j] + 1
+            } else {
+                dp[i][j + 1].max(dp[i + 1][j])
+            };
+        }
+    }
+    let mut map = HashMap::new();
+    let (mut i, mut j) = (n, m);
+    while i > 0 && j > 0 {
+        if old[i - 1] == new[j - 1] {
+            map.insert(i - 1, j - 1);
+            i -= 1;
+            j -= 1;
+        } else if dp[i - 1][j] >= dp[i][j - 1] {
+            i -= 1;
+        } else {
+            j -= 1;
+        }
+    }
+    map
+}
+
+fn restore_progress(
+    route: &CharacterRoute,
+    progress: &mut crate::model::CharacterProgress,
+    kept: &KeptProgress,
+) {
+    let mut seen: HashMap<String, usize> = HashMap::new();
+    let mut id_of: HashMap<String, String> = HashMap::new();
+    for event in &route.events {
+        let stamp = event_stamp(event);
+        let n = seen.entry(stamp.clone()).or_insert(0);
+        id_of.insert(format!("{stamp}#{n}"), event.id.clone());
+        *n += 1;
+    }
+    progress.completed = kept
+        .completed
+        .iter()
+        .filter_map(|stamp| id_of.get(stamp).cloned())
+        .collect();
+    let aligned = align_groups(&kept.tokens, &route.groups.iter().map(group_token).collect::<Vec<_>>());
+    let id_at = |index: usize| route.groups.get(index).map(|group| group.id.clone());
+    let map_ids = |indexes: &[usize]| {
+        indexes
+            .iter()
+            .filter_map(|index| aligned.get(index).copied())
+            .filter_map(id_at)
+            .collect()
+    };
+    progress.skipped_groups = map_ids(&kept.skipped);
+    progress.cleared_groups = map_ids(&kept.cleared);
+    progress.visited_groups = map_ids(&kept.visited);
+    progress.anchor_group = kept
+        .anchor
+        .and_then(|index| aligned.get(&index).copied())
+        .and_then(id_at);
+    progress.view_delta = if progress.anchor_group.is_some() {
+        kept.view_delta
+    } else {
+        0
+    };
 }
 
 pub fn install_build(
@@ -1032,6 +1190,59 @@ pub fn class_matches(gem: &QuestGem, class_name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::model::{GemInfo, QuestInfo};
+
+    #[test]
+    fn refresh_stays_on_the_same_zone_after_a_new_step() {
+        let mut data = catalog();
+        let mut file = crate::model::CharacterFile {
+            name: "Witch".into(),
+            class_name: "Witch".into(),
+            route: build_route(&data, "Witch", None, true),
+            progress: Default::default(),
+            user_edited: false,
+        };
+        let coast = file
+            .route
+            .groups
+            .iter()
+            .find(|group| group.name == "The Coast")
+            .unwrap();
+        let step = coast.event_ids[0].clone();
+        file.progress.anchor_group = Some(coast.id.clone());
+        file.progress.completed.insert(step);
+        file.progress.area_id = "1_1_2".into();
+        file.progress.view_delta = 1;
+        data.routes[0].1 = data.routes[0].1.replace(
+            "➞ {enter|1_1_2} #The Coast",
+            "➞ {enter|1_1_4_1} #The Submerged Passage\n➞ {enter|1_1_2} #The Coast",
+        );
+        refresh_generated_route(&mut file, &data, true);
+        let anchor = file.progress.anchor_group.as_deref().unwrap();
+        let group = file
+            .route
+            .groups
+            .iter()
+            .find(|group| group.id == anchor)
+            .unwrap();
+        assert_eq!(group.name, "The Coast");
+        assert_eq!(file.progress.view_delta, 1);
+        assert!(file.route.events.iter().any(|event| {
+            file.progress.completed.contains(&event.id) && event.text.contains("The Coast")
+        }));
+        let passage = file
+            .route
+            .groups
+            .iter()
+            .position(|group| group.name == "The Submerged Passage")
+            .unwrap();
+        let coast_at = file
+            .route
+            .groups
+            .iter()
+            .position(|group| group.id == anchor)
+            .unwrap();
+        assert!(passage < coast_at);
+    }
 
     #[test]
     fn vendor_cost_follows_the_gem_drop_level() {

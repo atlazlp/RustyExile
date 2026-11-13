@@ -1,6 +1,6 @@
 use eframe::egui::{self, Color32, RichText, TextureHandle, TextureOptions};
 use poe_core::{
-    build_route, fetch_pob, install_build, parse_markup, restart_at_beach,
+    build_route, fetch_pob, install_build, parse_markup, refresh_generated_route, restart_at_beach,
     tone_rgb, update_needs_permission, vendor_gem_regex, visible_lines, AppState, CampaignEvent,
     CharacterFile, ChatCommand, EventGroup, Experience, Hotkeys, HudCorner, TextTone,
     TriggerKind, UpdateOutcome, VERSION,
@@ -47,6 +47,20 @@ fn ensure_window_icon(ctx: &egui::Context) {
     }
     if frame < 180 {
         poe_overlay::apply_app_icon();
+    }
+}
+
+fn apply_profile(state: &mut AppState, experience: Experience) {
+    state.settings.apply_experience(experience);
+    state.dirty_settings = true;
+    let Some(name) = state.settings.active_character.clone() else {
+        return;
+    };
+    let league_start = state.settings.league_start;
+    if let Some(character) = state.characters.iter_mut().find(|character| character.name == name)
+    {
+        refresh_generated_route(character, &state.catalog, league_start);
+        state.dirty_characters = true;
     }
 }
 
@@ -606,8 +620,7 @@ impl UiApp {
                             .clicked()
                         {
                             if let Ok(mut state) = self.state.lock() {
-                                state.settings.apply_experience(experience);
-                                state.dirty_settings = true;
+                                apply_profile(&mut state, experience);
                             }
                         }
                     });
@@ -647,8 +660,7 @@ impl UiApp {
                 if selected {
                     ui.label(RichText::new("Current profile").color(accent()));
                 } else if ui.button(format!("Use {}", experience.label())).clicked() {
-                    state.settings.apply_experience(experience);
-                    state.dirty_settings = true;
+                    apply_profile(&mut state, experience);
                 }
             });
         });
