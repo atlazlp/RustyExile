@@ -471,11 +471,20 @@ pub struct QuestInfo {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ClassGems {
+    pub class_name: String,
+    pub start_gem_id: String,
+    pub chest_gem_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct Catalog {
     pub areas: Vec<AreaInfo>,
     pub gems: Vec<GemInfo>,
     pub quests: Vec<QuestInfo>,
     pub routes: Vec<(u8, String)>,
+    #[serde(default)]
+    pub starters: Vec<ClassGems>,
 }
 
 impl Catalog {

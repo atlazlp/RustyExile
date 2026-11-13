@@ -1,5 +1,7 @@
 use image::RgbaImage;
-use poe_core::{AreaInfo, Catalog, GemInfo, GemSource, QuestGem, QuestInfo, RegexPreset};
+use poe_core::{
+    AreaInfo, Catalog, ClassGems, GemInfo, GemSource, QuestGem, QuestInfo, RegexPreset,
+};
 use std::path::{Path, PathBuf};
 
 pub fn assets_root() -> PathBuf {
@@ -22,6 +24,7 @@ pub fn load_catalog() -> Catalog {
     let areas = load_areas(&root.join("data/areas.json"));
     let gems = load_gems(&root.join("data/gems.json"));
     let quests = load_quests(&root.join("data/quests.json"));
+    let starters = load_starters(&root.join("data/characters.json"));
     let mut routes = Vec::new();
     for act in 1..=10 {
         let path = root.join(format!("data/routes/act-{act}.txt"));
@@ -34,7 +37,26 @@ pub fn load_catalog() -> Catalog {
         gems,
         quests,
         routes,
+        starters,
     }
+}
+
+fn load_starters(path: &Path) -> Vec<ClassGems> {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    let Ok(raw) = serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(&text) else {
+        return Vec::new();
+    };
+    raw.into_iter()
+        .filter_map(|(class_name, value)| {
+            Some(ClassGems {
+                class_name,
+                start_gem_id: value.get("start_gem_id")?.as_str()?.to_string(),
+                chest_gem_id: value.get("chest_gem_id")?.as_str()?.to_string(),
+            })
+        })
+        .collect()
 }
 
 pub fn load_regex_defaults() -> Vec<RegexPreset> {
@@ -677,6 +699,54 @@ mod tests {
                 "{choice:?}"
             );
         }
+    }
+
+    #[test]
+    fn an_imported_scion_does_not_schedule_its_free_gems() {
+        let catalog = load_catalog();
+        let mut file = poe_core::CharacterFile {
+            name: "Scion".into(),
+            class_name: "Scion".into(),
+            route: build_route(&catalog, "Scion", None, true),
+            progress: Default::default(),
+            user_edited: false,
+        };
+        let build = poe_core::PobBuild {
+            class_name: "Scion".into(),
+            ascendancy: String::new(),
+            notes: String::new(),
+            gems: vec![
+                "Spectral Throw".into(),
+                "Prismatic Burst".into(),
+                "Fireball".into(),
+            ],
+            specs: Vec::new(),
+            bandit: Default::default(),
+        };
+        poe_core::install_build(&mut file, &catalog, &build, true);
+        assert!(!file.route.pob_gems.iter().any(|gem| gem == "Spectral Throw"));
+        assert!(!file
+            .route
+            .pob_gems
+            .iter()
+            .any(|gem| gem == "Prismatic Burst"));
+        assert!(file.route.pob_gems.iter().any(|gem| gem == "Fireball"));
+        assert!(file.route.events.iter().all(|event| {
+            event.gem_name.as_deref() != Some("Spectral Throw")
+                && event.gem_name.as_deref() != Some("Prismatic Burst Support")
+        }));
+        assert!(file
+            .route
+            .events
+            .iter()
+            .any(|event| event.gem_name.as_deref() == Some("Fireball")));
+        let spectral: std::collections::HashSet<String> =
+            ["Spectral Throw"].into_iter().map(str::to_string).collect();
+        let duelist = build_route(&catalog, "Duelist", Some(&spectral), true);
+        assert!(duelist
+            .events
+            .iter()
+            .any(|event| event.gem_name.as_deref() == Some("Spectral Throw")));
     }
 
     #[test]

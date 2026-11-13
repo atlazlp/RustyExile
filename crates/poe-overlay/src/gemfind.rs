@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 const GEM_SCALES: [f32; 8] = [0.5, 0.65, 0.8, 0.95, 1.1, 1.3, 1.55, 1.85];
 const CREST_SCALES: [f32; 7] = [1.0, 1.4, 1.75, 2.05, 2.5, 3.1, 3.8];
 const BANNER_SCALES: [f32; 7] = [0.67, 0.8, 1.0, 1.15, 1.35, 1.6, 2.0];
-const GEM_LIMIT: f32 = 34.0;
+// A quest reward icon scored 36 with its socket frame and alert badge.
+const GEM_LIMIT: f32 = 40.0;
 const CREST_LIMIT: f32 = 46.0;
 const BANNER_LIMIT: f32 = 40.0;
 

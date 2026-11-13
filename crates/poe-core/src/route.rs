@@ -37,6 +37,14 @@ pub fn build_route_with(
     league_start: bool,
     bandit: BanditChoice,
 ) -> CharacterRoute {
+    let kept = gem_filter.map(|filter| {
+        filter
+            .iter()
+            .filter(|name| !started_with(catalog, class_name, name))
+            .cloned()
+            .collect::<HashSet<_>>()
+    });
+    let gem_filter = kept.as_ref();
     let mut steps = Vec::new();
     for (act, text) in &catalog.routes {
         steps.extend(parse_act(catalog, *act, text, league_start, bandit));
@@ -340,6 +348,20 @@ fn act_town(catalog: &Catalog, act: u8) -> Option<String> {
         .iter()
         .find(|area| area.act == act && area.is_town)
         .map(|area| area.id.clone())
+}
+
+fn started_with(catalog: &Catalog, class_name: &str, gem_name: &str) -> bool {
+    let Some(starter) = catalog
+        .starters
+        .iter()
+        .find(|starter| starter.class_name.eq_ignore_ascii_case(class_name))
+    else {
+        return false;
+    };
+    [starter.start_gem_id.as_str(), starter.chest_gem_id.as_str()]
+        .into_iter()
+        .filter_map(|id| catalog.gem(id))
+        .any(|gem| names_match(gem_name, &gem.name))
 }
 
 fn names_match(pob: &str, catalog_name: &str) -> bool {
@@ -931,6 +953,9 @@ pub fn refresh_generated_route(
     if file.user_edited {
         return;
     }
+    file.route
+        .pob_gems
+        .retain(|name| !started_with(catalog, &file.class_name, name));
     let filter: HashSet<String> = file.route.pob_gems.iter().cloned().collect();
     let filtered = if filter.is_empty() {
         None
@@ -988,6 +1013,9 @@ pub fn install_build(
         file.route = fresh;
     }
     crate::pob::apply_pob(&mut file.route, build);
+    file.route
+        .pob_gems
+        .retain(|name| !started_with(catalog, &file.class_name, name));
 }
 
 pub fn area_named(areas: &[AreaInfo]) -> impl Fn(&str) -> Option<u8> + '_ {
@@ -1088,6 +1116,7 @@ Get {waypoint_get}
 "
                 .into(),
             )],
+            starters: Vec::new(),
         }
     }
 

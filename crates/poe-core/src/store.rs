@@ -30,7 +30,10 @@ pub fn save_settings(settings: &Settings) -> anyhow::Result<()> {
 pub fn load_catalog(fallback: Catalog) -> Catalog {
     let path = root_dir().join("database.json");
     if let Ok(text) = fs::read_to_string(&path) {
-        if let Ok(catalog) = serde_json::from_str(&text) {
+        if let Ok(mut catalog) = serde_json::from_str::<Catalog>(&text) {
+            if catalog.starters.is_empty() {
+                catalog.starters = fallback.starters;
+            }
             return catalog;
         }
     }

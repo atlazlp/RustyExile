@@ -1644,13 +1644,18 @@ impl UiApp {
                 }
                 state.settings.active_character = Some(name.clone());
                 let catalog = state.catalog.clone();
-                if let Some(character) = state.characters.iter_mut().find(|c| c.name == name) {
+                let count = if let Some(character) =
+                    state.characters.iter_mut().find(|c| c.name == name)
+                {
                     install_build(character, &catalog, &build, league_start);
                     character.route.pob_url = link;
-                }
+                    character.route.pob_gems.len()
+                } else {
+                    build.gems.len()
+                };
                 state.dirty_characters = true;
                 state.dirty_settings = true;
-                state.status = format!("Imported {} gems for {name}.", build.gems.len());
+                state.status = format!("Imported {count} gems for {name}.");
             }
             Err(err) => state.status = format!("Could not import that build: {err}"),
         }
